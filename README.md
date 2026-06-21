@@ -16,7 +16,7 @@
 **中文** —— Podcast2Obsidian 是一套**脚本优先（script-first）的归档流水线**。你在聊天群里
 发一个受支持的链接，dispatcher 拦截后在后台跑完整流程：下载媒体 → 用 **Google NotebookLM**
 总结 → 生成结构保真的 Markdown 笔记（摘要 + shownotes + 字幕全文 + 自动信息图），
-经 [Fast Note](https://github.com/haierkeys/obsidian-fast-note) 同步后端写入 Obsidian 仓库。
+经 [Fast Note](https://github.com/haierkeys/obsidian-fast-note-sync) 同步后端写入 Obsidian 仓库。
 日常执行路径里没有 agent / 大模型介入，全是确定性的 Python + shell。
 
 **EN** — Podcast2Obsidian is a **script-first archiving pipeline**. You drop a supported
@@ -24,7 +24,7 @@ link into a chat group; a dispatcher intercepts it and runs the pipeline in the
 background: download the media, summarize it with **Google NotebookLM**, and write a
 structure-faithful Markdown note (summary + shownotes + transcript + auto-generated
 infographic) into your Obsidian vault via the
-[Fast Note](https://github.com/haierkeys/obsidian-fast-note) sync backend. No agent or
+[Fast Note](https://github.com/haierkeys/obsidian-fast-note-sync) sync backend. No agent or
 LLM sits in the daily execution path — it is deterministic Python + shell.
 
 ---
@@ -230,7 +230,7 @@ Daily runs never spawn an agent.
 | [`nlm`](https://github.com/) CLI (`~/.local/bin/nlm`) | NotebookLM 自动化 / automation |
 | `gog` CLI (`~/.local/bin/gog`) | Google Drive 上传与回拉 / upload & pull |
 | `bili` CLI (`~/.local/bin/bili`) | B站音频与字幕兜底 / Bilibili audio & subtitle fallback |
-| [Fast Note](https://github.com/haierkeys/obsidian-fast-note) | Obsidian 同步后端 / sync backend |
+| [Fast Note](https://github.com/haierkeys/obsidian-fast-note-sync) | Obsidian 同步后端 / sync backend |
 
 ---
 
