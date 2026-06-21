@@ -123,6 +123,8 @@ cross-linkable inside Obsidian.
   自动移除 `[1]`、`[2, 3]` 这类引用标记，但保留 Markdown 结构。
 - **全图抓取** —— 自动抓取并嵌入单集的**所有图片**：单集播客封面 + Show Notes 里的每一张配图，
   原样下载、存入附件库、按原位置嵌进笔记（参见 [EZ Fashion 示例](#实际效果--in-action) 里的十余张配图）。
+- **YAML frontmatter（带回链）** —— 每篇笔记都带 YAML 头：`tags`、`podcast`、`episode`、
+  `Release Date`，以及一个**链接回原单集**的 `title` 字段，方便在 Obsidian 里检索、筛选、按属性建表，并一键跳回原节目。
 - **自动信息图** —— 每期触发一张 NotebookLM 信息图，下载 PNG，存入 Fast Note 附件库，
   并嵌入到笔记顶部。
 - **视频归档** —— Bilibili/YouTube：优先取原语言字幕 → NotebookLM 文本 source → 总结；
@@ -130,6 +132,10 @@ cross-linkable inside Obsidian.
   总结、字幕全文）。
 - **资讯简报监控** —— 每日批处理，扫描配置好的「早报 / 简报」类播客，处理新单集，归档到
   `Newsletters/<台名>/`，并向 Telegram 推送一行摘要。**订阅源是配置项，不再硬编码**（见下文）。
+- **Google Drive 音频归档** —— 全集模式下通过 `gog` CLI 把音频**直接上传到你的 Google Drive**
+  （`Podcasts/<节目名>/...`），本地只用临时文件，完成即清理。
+- **多设备同步** —— 笔记经 [Fast Note Sync](https://github.com/haierkeys/obsidian-fast-note-sync)
+  写入，自动在你的多台设备间同步（这也是我们选用 Fast Note Sync 的原因之一）。
 - **幂等去重** —— 按 `episode_id` / 归一化 `episode_url` 做 skip-if-exists；可扫描并清理
   Google Drive 上的历史重复（移入垃圾桶，绝不硬删除）。
 - **NotebookLM 队列修剪** —— 把每个 NotebookLM profile 当作滚动队列，达到阈值时先删最旧的
@@ -151,6 +157,9 @@ cross-linkable inside Obsidian.
 - **Full image capture** — automatically grabs and embeds **every image** in an episode:
   the episode's cover art plus all in-shownotes images, downloaded, stored as attachments,
   and kept in place (see the dozen-plus images in the [EZ Fashion sample](#实际效果--in-action)).
+- **YAML frontmatter (with back-link)** — every note carries a YAML header (`tags`,
+  `podcast`, `episode`, `Release Date`) plus a `title` field that **links back to the source
+  episode**, so notes are filterable/queryable in Obsidian and one click from the original.
 - **Auto infographic** — one NotebookLM infographic per episode, downloaded, stored as a
   Fast Note attachment, and embedded at the top of the note.
 - **Video archiving** — Bilibili/YouTube prefer the original-language transcript →
@@ -158,6 +167,12 @@ cross-linkable inside Obsidian.
 - **Newsletter watcher** — a daily batch over configured "morning brief" podcasts, filed
   under `Newsletters/<name>/` with a one-line Telegram digest. Sources are **configured,
   not hardcoded**.
+- **Google Drive audio archive** — in full-archive mode, audio is uploaded **straight to
+  your Google Drive** via the `gog` CLI (`Podcasts/<show>/...`); local files are temporary
+  and cleaned up afterwards.
+- **Multi-device sync** — notes are written through
+  [Fast Note Sync](https://github.com/haierkeys/obsidian-fast-note-sync) and sync across all
+  your devices automatically (one of the reasons we build on Fast Note Sync).
 - **Idempotent & deduplicated** — skip-if-exists by `episode_id` / normalized
   `episode_url`; scan and clean historical Drive duplicates (trash, never hard-delete).
 - **NotebookLM queue pruning** — each profile is a rolling queue; the oldest notebook is
