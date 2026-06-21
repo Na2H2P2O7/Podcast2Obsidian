@@ -399,4 +399,5 @@ Podcasts/<节目名 podcast name>/<单集标题 episode title>/
 
 ## 许可 / License
 
-见 `LICENSE`（待补充）。 / See `LICENSE` (to be added).
+本项目以 **MIT 许可**发布，详见 [`LICENSE`](LICENSE)。
+Released under the **MIT License** — see [`LICENSE`](LICENSE).
