@@ -262,7 +262,7 @@ Daily runs never spawn an agent.
 |------|----------------|
 | Python 3 | worker 运行时 / workers |
 | `curl` | Telegram 推送与下载 / push & downloads（系统自带） |
-| `nlm` CLI (`~/.local/bin/nlm`) | NotebookLM 自动化 / automation |
+| [`nlm`](https://github.com/jacob-bd/notebooklm-mcp-cli) CLI (`~/.local/bin/nlm`, v0.5.14) | NotebookLM 自动化 / automation |
 | [`gog`](https://github.com/openclaw/gogcli) CLI (`~/.local/bin/gog`) | Google Drive 上传与回拉 / upload & pull |
 | `bili` CLI (`~/.local/bin/bili`) | B站音频与字幕兜底 / Bilibili audio & subtitle fallback |
 | [Fast Note](https://github.com/haierkeys/obsidian-fast-note-sync) | Obsidian 同步后端 / sync backend |
@@ -434,6 +434,9 @@ Podcasts/<节目名 podcast name>/<单集标题 episode title>/
 
 ## 致谢与参考 / Acknowledgements & references
 
+- [`jacob-bd/notebooklm-mcp-cli`](https://github.com/jacob-bd/notebooklm-mcp-cli)（`nlm`，使用版本 **v0.5.14**）
+  —— 驱动 NotebookLM 上传 / 总结 / 信息图的命令行工具。The `nlm` CLI (v0.5.14 in use) that drives
+  NotebookLM upload / summary / infographic.
 - [`openclaw/gogcli`](https://github.com/openclaw/gogcli) —— 用于把音频直传 Google Drive 的 `gog` CLI。
   The `gog` CLI used to upload audio straight to Google Drive.
 - [`haixiong1997/Bilibili-Obsidian-Clipper`](https://github.com/haixiong1997/Bilibili-Obsidian-Clipper)
