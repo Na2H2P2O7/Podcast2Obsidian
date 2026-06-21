@@ -45,7 +45,7 @@ push, filed to the vault, then reported back as saved).
 | <img src="Examples/telegram-pipeline-flow.jpg" alt="Telegram send → ack → done flow" width="380"> | <img src="Examples/newsletter-digest.jpg" alt="Daily newsletter digest pushed to Telegram" width="380"> |
 | 发送 → 接收 → 完成 / send → ack → done | 每日多源摘要 / merged daily brief |
 
-📄 **完整导出笔记示例 / Full exported note sample:** [`Examples/Example.pdf`](Examples/Example.pdf)
+📄 **完整导出笔记示例 / Full exported note sample:** [`Grad Lounge 115 - 海外学术著作的中译本是怎么出版的.pdf`](Examples/Grad%20Lounge%20115%20-%20海外学术著作的中译本是怎么出版的.pdf)
 —— 一篇真实生成笔记导出的 PDF（含 NotebookLM 摘要、信息图、时间线结构化正文与 shownotes）。
 A PDF of one real generated note (NotebookLM summary, infographic, timeline-structured body, and shownotes).
 
