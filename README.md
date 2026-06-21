@@ -97,6 +97,10 @@ it into the **instruction skeleton for the NotebookLM summary**:
 being a vague blob, and notes for the same show stay consistent, searchable, and
 cross-linkable inside Obsidian.
 
+> 💡 **经验法则**：原播客 Show Notes 里的 Timeline 写得越详细，总结的质量就越好。
+> **Rule of thumb:** the more detailed the timeline in the original podcast's show notes,
+> the better the summary.
+
 ---
 
 ## 核心特性 / Key features
