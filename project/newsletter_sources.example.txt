@@ -1,0 +1,12 @@
+# Podcast2Obsidian — newsletter watcher sources / 资讯简报订阅源
+#
+# One Xiaoyuzhou podcast URL per line. Everything after "#" is a comment.
+# Copy this file to `newsletter_sources.txt` (same folder) and edit it,
+# or point the watcher at any file via `--sources-file PATH` /
+# the `NEWS_SOURCES_FILE` environment variable.
+#
+# 每行一个小宇宙播客链接，"#" 之后为注释。把本文件复制为同目录下的
+# `newsletter_sources.txt` 并修改，或用 `--sources-file PATH` /
+# 环境变量 `NEWS_SOURCES_FILE` 指向任意文件。
+
+https://www.xiaoyuzhoufm.com/podcast/<your_podcast_id>   # 资讯早七点 (example / 示例)

@@ -1,0 +1,32 @@
+# --- Personal / runtime config (keep the .example.* templates, ignore the real ones) ---
+newsletter_sources.txt
+specific_podcasts.txt
+podcast_routing.json
+**/newsletter_sources.txt
+**/specific_podcasts.txt
+**/podcast_routing.json
+
+# --- Runtime state, logs, caches ---
+tmp/
+logs/
+*.log
+state*.json
+*_state.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Editor / OS noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Backups ---
+*.bak
+*.bak-*
+*.backup-*

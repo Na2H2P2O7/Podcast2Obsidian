@@ -1,0 +1,46 @@
+{
+  "资讯早七点": {
+    "skip_infographic": true,
+    "nlm_profile": "secondary",
+    "title_date_prefix": true,
+    "fast_note_root": "Newsletters",
+    "extra_tags": ["News"]
+  },
+
+  "Example Newsletter (date-stamped issues)": {
+    "skip_infographic": true,
+    "nlm_profile": "secondary",
+    "title_date_prefix": true,
+    "fast_note_root": "Newsletters",
+    "keep_issue_in_news_title": true,
+    "strip_leading_mmdd": true,
+    "episode_from_release_date_compact": true
+  },
+
+  "Example Music Show": {
+    "skip_infographic": false,
+    "extra_tags": ["Music"]
+  },
+
+  "Example Tagged Show": {
+    "extra_tags": ["生物医药"]
+  },
+
+  "Example Direct-Markdown Show (no NotebookLM/Drive)": {
+    "direct_markdown": true,
+    "skip_notebooklm": true,
+    "skip_drive": true,
+    "fast_note_root": "Research",
+    "frontmatter_preset": "research",
+    "primary_tag": "Biology",
+    "preserve_podcast_tag": true,
+    "title_from_reference": true,
+    "note_title_mode": "title_only_in_podcast_folder",
+    "merge_companion_shownotes": true,
+    "apple_show_url": "https://podcasts.apple.com/us/podcast/<show-slug>/id<show-id>",
+    "companion_apple_show_url": "https://podcasts.apple.com/us/podcast/<companion-slug>/id<companion-id>",
+    "companion_podcast_name": "Companion Show Name",
+    "apple_episode_number_regex": "第\\s*(\\d+)\\s*期",
+    "phrase_patterns": ["example\\s*show", "示例\\s*节目"]
+  }
+}

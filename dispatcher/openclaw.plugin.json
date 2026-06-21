@@ -1,0 +1,23 @@
+{
+  "id": "xiaoyuzhou-dispatcher",
+  "name": "Podcast2Obsidian Dispatcher",
+  "description": "Deterministically starts Podcast2Obsidian profiles for inbound Xiaoyuzhou, Apple Podcasts, Pocket Casts, configured Goodpods resolvers, RedCircle, Bilibili, and YouTube targets in the configured Telegram group.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "hooks": ["before_dispatch"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "telegramGroupId": { "type": "string" },
+      "wrapper": { "type": "string" },
+      "profile": { "type": "string" },
+      "bilibiliProfile": { "type": "string" },
+      "youtubeProfile": { "type": "string" },
+      "logDir": { "type": "string" }
+    }
+  }
+}
