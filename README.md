@@ -45,9 +45,16 @@ push, filed to the vault, then reported back as saved).
 | <img src="Examples/telegram-pipeline-flow.jpg" alt="Telegram send → ack → done flow" width="380"> | <img src="Examples/newsletter-digest.jpg" alt="Daily newsletter digest pushed to Telegram" width="380"> |
 | 发送 → 接收 → 完成 / send → ack → done | 每日多源摘要 / merged daily brief |
 
-📄 **完整导出笔记示例 / Full exported note sample:** [`Grad Lounge 115 - 海外学术著作的中译本是怎么出版的.pdf`](Examples/Grad%20Lounge%20115%20-%20海外学术著作的中译本是怎么出版的.pdf)
-—— 一篇真实生成笔记导出的 PDF（含 NotebookLM 摘要、信息图、时间线结构化正文与 shownotes）。
-A PDF of one real generated note (NotebookLM summary, infographic, timeline-structured body, and shownotes).
+📝 **完整笔记示例 / Full note sample:** [EZ Fashion - 65 Schiaparelli](Examples/EZ-Fashion-65-Schiaparelli/EZ%20Fashion%20-%2065%20Schiaparelli%20神仙打架的高定秀，她在香奈儿隔壁搞超现实主义.md)
+—— 一篇真实生成的 Markdown 笔记（frontmatter、顶部信息图、NotebookLM 摘要、时间线结构正文、Shownotes 与配图），
+直接在 GitHub 上就能带图查看。
+A real generated Markdown note (frontmatter, infographic, NotebookLM summary,
+timeline-structured body, shownotes + images) — renders with all images right here on GitHub.
+
+> 📄 笔记是 Markdown 格式；如需 PDF，可在 Obsidian / 编辑器里**手动另存为 PDF**（工具本身暂不直接导出 PDF）。
+> 这里附了一份手动导出的样例：[`Grad Lounge 115 ...pdf`](Examples/Grad%20Lounge%20115%20-%20海外学术著作的中译本是怎么出版的.pdf)。
+> Notes are Markdown; a PDF can be **saved manually** from Obsidian / your editor (the tool
+> doesn't export PDF itself yet). A manually-exported sample is attached for reference.
 
 ---
 
