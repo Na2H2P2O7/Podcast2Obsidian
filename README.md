@@ -397,7 +397,33 @@ Podcasts/<节目名 podcast name>/<单集标题 episode title>/
 
 ---
 
+## ⚠️ 免责声明 / Disclaimer
+
+**中文** —— 本项目以及它产生的一切内容**仅供个人学习与研究使用，请勿用于任何商业用途**。
+
+- 工具下载的音频 / 字幕，以及由 NotebookLM 生成的总结、信息图、导出的 **PDF / Markdown 笔记**，
+  均**衍生自第三方版权内容**（播客、视频等），版权归原作者 / 平台所有。
+- 这些产物仅供你个人离线学习，**不得**公开分发、二次发布或用于商业目的。
+- 请遵守各来源平台的服务条款与原创作者的权利；因使用本工具产生的任何后果由使用者自行承担。
+- MIT 许可仅适用于本仓库的**代码**，不授予对上述第三方内容或衍生产物的任何使用 / 商业化权利。
+
+**EN** — This project and everything it produces are **for personal learning and research
+only — not for any commercial use**.
+
+- Downloaded audio / transcripts and the NotebookLM-generated summaries, infographics, and
+  exported **PDF / Markdown notes** are **derivatives of third-party copyrighted content**
+  (podcasts, videos, etc.) owned by the original creators / platforms.
+- They are for your personal, offline study only and **must not** be redistributed,
+  republished, or used commercially.
+- Respect each source platform's Terms of Service and the original creators' rights; you
+  alone are responsible for how you use this tool.
+- The MIT License covers only the **code** in this repository; it grants no rights over the
+  third-party content or the derived outputs above.
+
+---
+
 ## 许可 / License
 
-本项目以 **MIT 许可**发布，详见 [`LICENSE`](LICENSE)。
-Released under the **MIT License** — see [`LICENSE`](LICENSE).
+本项目**代码**以 **MIT 许可**发布，详见 [`LICENSE`](LICENSE)（不含上述第三方内容 / 衍生产物）。
+The **code** is released under the **MIT License** — see [`LICENSE`](LICENSE)
+(this does not cover the third-party content / derived outputs noted above).
