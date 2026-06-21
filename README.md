@@ -262,8 +262,8 @@ Daily runs never spawn an agent.
 |------|----------------|
 | Python 3 | worker 运行时 / workers |
 | `curl` | Telegram 推送与下载 / push & downloads（系统自带） |
-| [`nlm`](https://github.com/) CLI (`~/.local/bin/nlm`) | NotebookLM 自动化 / automation |
-| `gog` CLI (`~/.local/bin/gog`) | Google Drive 上传与回拉 / upload & pull |
+| `nlm` CLI (`~/.local/bin/nlm`) | NotebookLM 自动化 / automation |
+| [`gog`](https://github.com/openclaw/gogcli) CLI (`~/.local/bin/gog`) | Google Drive 上传与回拉 / upload & pull |
 | `bili` CLI (`~/.local/bin/bili`) | B站音频与字幕兜底 / Bilibili audio & subtitle fallback |
 | [Fast Note](https://github.com/haierkeys/obsidian-fast-note-sync) | Obsidian 同步后端 / sync backend |
 
@@ -429,6 +429,19 @@ Podcasts/<节目名 podcast name>/<单集标题 episode title>/
 - Large audio uploads to NotebookLM can take several minutes.
 - Built around a personal OpenClaw + NotebookLM + Fast Note setup; treat it as a reference
   implementation rather than a turnkey installer.
+
+---
+
+## 致谢与参考 / Acknowledgements & references
+
+- [`openclaw/gogcli`](https://github.com/openclaw/gogcli) —— 用于把音频直传 Google Drive 的 `gog` CLI。
+  The `gog` CLI used to upload audio straight to Google Drive.
+- [`haixiong1997/Bilibili-Obsidian-Clipper`](https://github.com/haixiong1997/Bilibili-Obsidian-Clipper)
+  —— Bilibili 笔记的保存形式参考了此项目。Our Bilibili note format is informed by this project.
+- [`obsidianmd/obsidian-clipper`](https://github.com/obsidianmd/obsidian-clipper)
+  —— YouTube 笔记的保存形式参考了此项目。Our YouTube note format is informed by this project.
+- [`haierkeys/obsidian-fast-note-sync`](https://github.com/haierkeys/obsidian-fast-note-sync)
+  —— 写入 Obsidian 与多设备同步的后端。The Obsidian sync backend powering note delivery and multi-device sync.
 
 ---
 
