@@ -29,6 +29,24 @@ LLM sits in the daily execution path — it is deterministic Python + shell.
 
 ---
 
+## 实际效果 / In action
+
+**中文** —— 一条链接进，一篇笔记出。下面分别是 **Telegram 端的完整流水**（发送链接 → 🦞 表态接收 →
+「完成」回执，含 NotebookLM id、笔记路径、信息图状态）和**每日资讯简报**（多档早报合并成一条摘要推送，
+逐条入库后回报「已保存到 Vault」）。
+
+**EN** — One link in, one note out. Left: the **end-to-end Telegram flow** (send a link →
+🦞 ack reaction → a "done" receipt with the NotebookLM id, note path, and infographic
+status). Right: the **daily newsletter digest** (several morning briefs merged into one
+push, filed to the vault, then reported back as saved).
+
+| Telegram 流水 / pipeline flow | 资讯简报 / newsletter digest |
+|:---:|:---:|
+| <img src="Examples/telegram-pipeline-flow.jpg" alt="Telegram send → ack → done flow" width="380"> | <img src="Examples/newsletter-digest.jpg" alt="Daily newsletter digest pushed to Telegram" width="380"> |
+| 发送 → 接收 → 完成 / send → ack → done | 每日多源摘要 / merged daily brief |
+
+---
+
 ## ⭐ 时间线驱动的总结：把 shownotes 时间轴当作 Prompt 骨架 / Timeline-driven summarization
 
 > 这是 Podcast2Obsidian 总结质量的核心，也是本项目最关键的一处 **Prompt Engineering**。
@@ -131,30 +149,30 @@ cross-linkable inside Obsidian.
 
 ## 架构 / Architecture
 
-```
-                 聊天消息（URL / BV 号）
-                          │
-                          ▼
-   ┌─────────────────────────────────────────────┐
-   │  dispatcher/  (before_dispatch hook)          │  拦截受支持链接
-   │  index.js                                     │  intercepts supported links
-   └─────────────────────────────────────────────┘
-                          │ spawns
-                          ▼
-   ┌─────────────────────────────────────────────┐
-   │  project/scripts/run_profile.sh  (runner)     │  读 profile config.env，
-   │  + send_log.sh                                │  写日志、解析 📣 RESULT、通知
-   └─────────────────────────────────────────────┘
-                          │ calls
-                          ▼
-   ┌─────────────────────────────────────────────┐
-   │  skill/scripts/*.py  (workers)                │  下载 · NotebookLM · Fast Note
-   │  xiaoyuzhou_dl · bilibili_video ·             │  小宇宙 / B站 / YouTube / 简报
-   │  youtube_video · news_podcasts_daily          │
-   └─────────────────────────────────────────────┘
-                          │ writes
-                          ▼
-            Fast Note  →  Obsidian 仓库 / vault
+```mermaid
+flowchart TD
+    U["💬 Telegram 群消息 / chat message<br/>podcast · Bilibili · YouTube URL"]
+    D["🔌 dispatcher · before_dispatch hook<br/>index.js — 拦截受支持链接"]
+    R["⚙️ run_profile.sh · runner<br/>profile · 日志 · 解析 📣 RESULT · 通知"]
+    W["🐍 Python workers<br/>xiaoyuzhou_dl · bilibili_video · youtube_video"]
+    NW["🗞️ news_podcasts_daily.py<br/>每日资讯简报监控 / daily newsletter watcher"]
+    DL["⬇️ 下载音频 / 抓取字幕<br/>download audio / scrape transcript"]
+    TL["🧩 shownotes 时间线 → Prompt 骨架<br/>timeline → summary-prompt skeleton"]
+    NLM["🧠 NotebookLM<br/>结构化总结 + 信息图 / structured summary + infographic"]
+    FN["📝 Fast Note"]
+    OB["🔮 Obsidian 仓库 / vault"]
+    DRV["☁️ Google Drive<br/>全集归档 + 去重 / full-archive + dedup"]
+
+    U --> D --> R --> W
+    W --> DL --> NLM
+    W --> TL --> NLM
+    NW -. 每日定时 / cron .-> TL
+    NLM --> FN --> OB
+    W -. 全集模式 / full-archive .-> DRV
+
+    style TL fill:#fde68a,stroke:#d97706,color:#111827
+    style NLM fill:#dbeafe,stroke:#2563eb,color:#111827
+    style OB fill:#ede9fe,stroke:#7c3aed,color:#111827
 ```
 
 **中文** —— 三层：**dispatcher** 插件拦截聊天链接，**runner**（shell wrapper）负责配置 /
