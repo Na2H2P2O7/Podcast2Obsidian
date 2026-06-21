@@ -121,6 +121,8 @@ cross-linkable inside Obsidian.
 - **结构保真笔记** —— 保存的 Markdown 保留原始 shownotes（链接、图片、列表、引用、粗体），
   并追加 clean 后的摘要、`## Shownotes`、clean 后正文、`## 补充 Shownotes` 尾部；
   自动移除 `[1]`、`[2, 3]` 这类引用标记，但保留 Markdown 结构。
+- **全图抓取** —— 自动抓取并嵌入单集的**所有图片**：单集播客封面 + Show Notes 里的每一张配图，
+  原样下载、存入附件库、按原位置嵌进笔记（参见 [EZ Fashion 示例](#实际效果--in-action) 里的十余张配图）。
 - **自动信息图** —— 每期触发一张 NotebookLM 信息图，下载 PNG，存入 Fast Note 附件库，
   并嵌入到笔记顶部。
 - **视频归档** —— Bilibili/YouTube：优先取原语言字幕 → NotebookLM 文本 source → 总结；
@@ -146,6 +148,9 @@ cross-linkable inside Obsidian.
   quotes, bold), appends a cleaned summary, a `## Shownotes` block, the cleaned body, and a
   `## 补充 Shownotes` tail; citation markers like `[1]`, `[2, 3]` are stripped while
   Markdown structure is kept.
+- **Full image capture** — automatically grabs and embeds **every image** in an episode:
+  the episode's cover art plus all in-shownotes images, downloaded, stored as attachments,
+  and kept in place (see the dozen-plus images in the [EZ Fashion sample](#实际效果--in-action)).
 - **Auto infographic** — one NotebookLM infographic per episode, downloaded, stored as a
   Fast Note attachment, and embedded at the top of the note.
 - **Video archiving** — Bilibili/YouTube prefer the original-language transcript →
