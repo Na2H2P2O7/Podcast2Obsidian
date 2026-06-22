@@ -106,6 +106,20 @@ Agents should not be in the daily execution path.
 
 - For normal user-submitted supported podcast/Bilibili/YouTube targets, rely on the dispatcher + runner. Do not spawn a sub-agent just to process media.
 - Use agent/tool work only for maintenance, debugging, code changes, validation, or explicit manual runs.
+
+### LLM fallback on manual overrides（手动 override 时回退给 agent）
+
+- 默认路径是确定性的：dispatcher 命中"裸链接"→ 直接跑 `run_profile.sh`（默认行为），不经 agent。
+- 但当同一条消息里带**自然语言指令 / override**（例如"别做信息图"、"只下载不总结"、`--no-infographic` 之类），
+  纯脚本无法解析这些意图。此时 dispatcher 的 `OVERRIDE_RE` 命中后**不再 `handled`**，把消息**放行给 OpenClaw multi-agent**
+  （专用子 agent `xiaoyuzhou`；必要时回落到 main `🦞`）。
+- 该 agent（LLM）负责把自然语言翻成正确的 wrapper flag，再调用：
+  ```bash
+  bash $HOME/.openclaw/workspace/projects/podcast2obsidian/scripts/run_profile.sh \
+    --profile <profile> --url '<target>' --no-infographic   # 例：用户说"别做信息图"
+  ```
+- 常见可由 agent 映射的 flag：`--no-infographic`、`--no-upload`、`--local`、`--no-notebooklm` 等。
+- 即"快路径确定性脚本 + 慢路径 LLM 兜底"：能机械处理的机械处理，带个性化要求的才花 LLM。
 - Manual runs must use the project wrapper, not direct script paths:
   ```bash
   bash $HOME/.openclaw/workspace/projects/podcast2obsidian/scripts/run_profile.sh --profile <profile> --url '<target>'

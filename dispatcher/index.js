@@ -19,6 +19,11 @@ const POCKETCASTS_URL_RE = /https?:\/\/(?:pca\.st\/episode\/|(?:www\.)?pocketcas
 const GOODPODS_URL_RE = /https?:\/\/(?:www\.)?goodpods\.com\/(?:[a-z]{2}\/)?podcasts\/[^\s<>"\])]+\/[^\s<>"\])]+/iu;
 const REDCIRCLE_AUDIO_URL_RE = /https?:\/\/audio\d*\.redcircle\.com\/episodes\/[0-9a-f-]+\/stream\.(?:mp3|m4a|aac|wav|ogg)[^\s<>"\])]*/iu;
 
+// Manual-override / custom-instruction signals. When a message carries one of these
+// alongside a supported link, the rigid default script can't honor it, so the dispatcher
+// DEFERS to the OpenClaw agent (multi-agent) instead of running the deterministic path.
+const OVERRIDE_RE = /信息图|infographic|不要|不用|不需要|无需|别(?:做|生成|加|上传|要)|跳过|去掉|只(?:做|要|保留|上传)|仅|--[a-z][\w-]*|\bno[-\s]|\bskip\b|\bwithout\b|\bonly\b|\bdon'?t\b|\bdisable\b/iu;
+
 function cfg(pluginConfig = {}) {
   return {
     telegramGroupId: String(pluginConfig.telegramGroupId || DEFAULT_GROUP_ID),
@@ -133,10 +138,23 @@ export default definePluginEntry({
 
       const text = [event.content, event.body].filter(Boolean).join("\n");
       const task = extractTask(text, options);
+      // No supported target -> let the normal OpenClaw agent dispatch handle the message.
       if (!task) return;
 
-      const runId = `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${process.pid}`;
       const dispatchLog = `${options.logDir}/xiaoyuzhou-dispatcher.log`;
+
+      // Fallback: if the message carries a manual override/instruction beyond the bare link
+      // (e.g. "别做信息图", "only ...", a `--flag`), the deterministic default script cannot
+      // honor it. Defer to the OpenClaw agent (multi-agent) by NOT handling here — the agent
+      // interprets the request and runs run_profile.sh with the right flags (--no-infographic,
+      // --no-upload, --local, ...).
+      const rest = text.split(task.target).join(" ");
+      if (OVERRIDE_RE.test(rest)) {
+        appendDispatcherLog(dispatchLog, `defer-to-agent target=${task.target} reason=manual-override`);
+        return;
+      }
+
+      const runId = `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${process.pid}`;
       const outLog = `${options.logDir}/xiaoyuzhou-dispatcher-${task.profile}-${runId}.log`;
       const args = [options.wrapper, "--profile", task.profile, "--url", task.target, "--notify-chat-id", options.telegramGroupId];
 

@@ -217,6 +217,28 @@ flowchart TD
 config/logging/notifications, and **Python workers** that download → summarize → save.
 Daily runs never spawn an agent.
 
+### 🪝 LLM 兜底 / Agent fallback
+
+**中文** —— 默认是"快路径"：dispatcher 命中**裸链接**就直接跑脚本(确定性、无 agent)。但当消息里
+带**自然语言 override**(如"别做信息图"、"只下载不总结"、`--no-infographic`),纯脚本解析不了——
+此时 dispatcher 的 `OVERRIDE_RE` 命中后**放行**(不 `handled`),消息落到 **OpenClaw 的 multi-agent**
+(专用子 agent `xiaoyuzhou`,必要时回落 main `🦞`)。这个 LLM 把自然语言翻成正确的 wrapper flag
+(`--no-infographic` / `--no-upload` / `--local` …)再跑 `run_profile.sh`。
+**即"能机械处理的走脚本,带个性化要求的才花 LLM"。**
+
+**EN** — Fast path by default: the dispatcher runs the script directly for a **bare link**
+(deterministic, no agent). But when a message carries a **natural-language override**
+("no infographic", "download only", `--no-infographic`), scripts can't parse the intent — the
+dispatcher's `OVERRIDE_RE` then **defers** (doesn't mark `handled`), so the message falls
+through to **OpenClaw's multi-agent** (a dedicated `xiaoyuzhou` sub-agent, falling back to the
+main `🦞` agent). That LLM maps the request to the right wrapper flags and runs `run_profile.sh`.
+**Deterministic scripts for the mechanical case; an LLM only for personalized requests.**
+
+```
+裸链接 / bare link        → dispatcher → run_profile.sh (默认)         [script]
+链接 + "别做信息图" / +NL  → dispatcher 放行 → OpenClaw agent → run_profile.sh --no-infographic   [LLM]
+```
+
 ---
 
 ## 目录结构 / Repository layout
