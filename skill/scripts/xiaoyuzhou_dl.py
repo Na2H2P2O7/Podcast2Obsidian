@@ -3487,6 +3487,19 @@ def backup_file_once(src_path: str) -> Optional[str]:
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     dest = backup_dir / f"{src.name}.{stamp}.bak"
     shutil.copy2(src, dest)
+    # 只保留每个库最近 N 份 .bak（含刚生成的这份），避免手动开启备份时整库快照堆到数十 GB。
+    try:
+        keep = int(os.environ.get('FAST_NOTE_BACKUP_KEEP', '3'))
+    except ValueError:
+        keep = 3
+    if keep > 0:
+        # 时间戳文件名按字典序即按时间序；保留末尾 keep 份，删除更旧的。
+        stale = sorted(backup_dir.glob(f"{src.name}.*.bak"))[:-keep]
+        for old in stale:
+            try:
+                old.unlink()
+            except OSError:
+                pass
     return str(dest)
 
 
