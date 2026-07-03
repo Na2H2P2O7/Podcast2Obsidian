@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import atexit
+import fcntl
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -10,6 +12,7 @@ WORKSPACE = os.path.expanduser('~/.openclaw/workspace')
 CORE_SCRIPT = f'{WORKSPACE}/skills/podcast2obsidian/scripts/xiaoyuzhou_dl.py'
 STATE_PATH = f'{WORKSPACE}/tmp/specific_podcasts_daily_state.json'
 LOG_PATH = f'{WORKSPACE}/tmp/specific_podcasts_daily.log'
+LOCK_PATH = f'{WORKSPACE}/tmp/specific_podcasts_daily.lock'
 # Watched podcasts are configured outside the code (not hardcoded). Resolution:
 #   1. --source URL          (repeatable, highest priority)
 #   2. --sources-file PATH   (one URL per line; '#' starts a comment)
@@ -60,6 +63,50 @@ def log(msg: str):
     print(msg)
 
 
+_LOCK_HANDLE = None
+
+
+def acquire_single_instance_lock(lock_path: str = LOCK_PATH):
+    """单实例锁：防止两个 launchd 触发重叠导致 state 互相覆盖、重复下载。"""
+    global _LOCK_HANDLE
+    Path(os.path.dirname(lock_path)).mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, 'a+', encoding='utf-8')
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        owner = handle.read().strip()
+        log(f'skip: another specific_podcasts_daily batch is already running ({owner})' if owner
+            else 'skip: another specific_podcasts_daily batch is already running')
+        handle.close()
+        return None
+
+    handle.seek(0)
+    handle.truncate()
+    handle.write(json.dumps({
+        'pid': os.getpid(),
+        'started_at': datetime.now(timezone.utc).isoformat(),
+    }, ensure_ascii=False))
+    handle.flush()
+    _LOCK_HANDLE = handle
+
+    def _release():
+        global _LOCK_HANDLE
+        if _LOCK_HANDLE is None:
+            return
+        try:
+            _LOCK_HANDLE.seek(0)
+            _LOCK_HANDLE.truncate()
+            fcntl.flock(_LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
+            _LOCK_HANDLE.close()
+        except Exception:
+            pass
+        _LOCK_HANDLE = None
+
+    atexit.register(_release)
+    return handle
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--since-hours', type=int, default=72)
@@ -86,17 +133,23 @@ def load_state(path: str):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if isinstance(data, dict) and isinstance(data.get('processed_urls'), dict):
-            return data
-    except Exception:
-        pass
-    return {'processed_urls': {}, 'updated_at': None}
+    except Exception as e:
+        # 文件存在但损坏：绝不静默回退空 state（会重复下载 / 重复上传）。
+        raise RuntimeError(f'state file 损坏，拒绝以空状态继续（会重复处理）: {path}: {e}')
+    if isinstance(data, dict) and isinstance(data.get('processed_urls'), dict):
+        return data
+    raise RuntimeError(f'state file 结构非法，拒绝以空状态继续: {path}')
 
 
 def save_state(path: str, state: dict):
     Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
+    # 原子写：先写 .tmp 再 os.replace，避免写到一半被杀留下截断文件。
+    tmp = f'{path}.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def prune_state(state: dict, ttl_hours: int = 720):
@@ -184,6 +237,8 @@ def main():
             'or create projects/podcast2obsidian/specific_podcasts.txt '
             '(see specific_podcasts.example.txt)')
         return 1
+    if not args.dry_run and acquire_single_instance_lock() is None:
+        return 0
     core = load_core()
     state = prune_state(load_state(args.state_path))
     processed_urls = state.get('processed_urls', {})
@@ -203,12 +258,23 @@ def main():
         return 0
 
     results = []
+    fail_count = 0
     for ep in found:
         log(f"processing {ep['podcast_name']} -> {ep['episode_url']}")
-        result = process_episode(core, ep['episode_url'], dry_run=args.dry_run)
+        try:
+            result = process_episode(core, ep['episode_url'], dry_run=args.dry_run)
+        except Exception as e:
+            # 单集失败不应连带丢掉本轮已完成单集的去重进度。
+            fail_count += 1
+            log(f"error processing {ep['episode_url']}: {e}")
+            continue
         results.append(result)
         if not args.dry_run:
             processed_urls[ep['episode_url']] = datetime.now(timezone.utc).isoformat()
+            # 每成功一集就落盘，崩溃/被杀也不会重跑已完成单集。
+            state['processed_urls'] = processed_urls
+            state['updated_at'] = datetime.now(timezone.utc).isoformat()
+            save_state(args.state_path, state)
 
     if args.dry_run:
         print(json.dumps(results, ensure_ascii=False, indent=2))
@@ -217,7 +283,7 @@ def main():
     state['processed_urls'] = processed_urls
     state['updated_at'] = datetime.now(timezone.utc).isoformat()
     save_state(args.state_path, state)
-    log(f'processed {len(results)} update(s)')
+    log(f'processed {len(results)} update(s), {fail_count} failed')
     return 0
 
 

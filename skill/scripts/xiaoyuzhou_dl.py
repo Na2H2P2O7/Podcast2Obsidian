@@ -1047,6 +1047,9 @@ def reconcile_audio_source_after_upload(notebook_id: str, audio_path: str, befor
 
 def wait_for_source_content_ready(source_id: str, deadline_ts: float = 0, state: Optional[dict] = None) -> tuple[bool, dict]:
     """source id 出现后，继续确认 NotebookLM 已经暴露 transcript/content。"""
+    # 兜底截止：若调用方未传 deadline，也不能无限轮询（否则内容永不就绪时会卡死整个任务）。
+    if not deadline_ts:
+        deadline_ts = time.time() + 1800
     attempt = 0
     last_status = {}
     while True:
@@ -1361,10 +1364,19 @@ def list_notebook_sources(notebook_id: str) -> list[dict]:
 def notebook_has_any_sources(notebook_id: str) -> bool:
     return len(list_notebook_sources(notebook_id)) > 0
 
+def require_http_url(url: str) -> str:
+    """确保 URL 是 http/https，挡掉 file:// 等 SSRF 与 - 开头的参数注入。"""
+    u = (url or "").strip()
+    scheme = urlparse(u).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"refusing non-http(s) url: {u!r}")
+    return u
+
 def fetch_page(url: str) -> str:
     """抓取网页内容 (使用 curl 避免 SSL 问题)"""
+    url = require_http_url(url)
     result = subprocess.run(
-        ['curl', '-sL', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', url],
+        ['curl', '-sL', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', '--', url],
         capture_output=True, text=True, timeout=60
     )
     if result.returncode != 0:
@@ -1376,7 +1388,7 @@ def get_rss_from_apple(podcast_name: str) -> str:
     # Search Apple Podcasts
     search_url = f"https://itunes.apple.com/search?term={quote(podcast_name)}&media=podcast&limit=5"
     result = subprocess.run(
-        ['curl', '-sL', search_url],
+        ['curl', '-sL', '--', search_url],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -1850,7 +1862,7 @@ def extract_apple_episode_info(html: str, apple_url: str) -> dict:
         info['episode_webpage'] = unescape(webpage_match.group(1).strip())
         info['episode_url'] = info['episode_webpage']
 
-    episode_id = (parse_qs(urlparse(apple_url).query or {}).get('i') or [''])[0]
+    episode_id = (parse_qs(urlparse(apple_url).query or '').get('i') or [''])[0]
     if episode_id:
         info['apple_episode_id'] = episode_id
         info['episode_id'] = episode_id
@@ -2018,8 +2030,15 @@ def extract_episode_info(html: str, episode_url: str) -> dict:
     
     return info
 
+def oneline(value: str) -> str:
+    """把用于日志/RESULT 展示的字符串压成单行：剥离控制字符与 📣，防止抓来的标题伪造 RESULT 行。"""
+    return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(value or '')).replace('📣', '').strip()
+
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符"""
+    # 先剥离控制字符（含换行/回车/制表符），文件名/笔记路径不该含这些，
+    # 也杜绝含换行的标题在日志里伪造出额外的 📣 RESULT 行。
+    name = re.sub(r'[\x00-\x1f\x7f]+', '', name or '')
     illegal = r'[<>:"/\\|?*]'
     name = re.sub(illegal, '_', name)
     name = name.strip(' .-_')
@@ -2040,17 +2059,30 @@ def format_duration(seconds: int) -> str:
 def download_audio(url: str, dest_path: str) -> bool:
     """下载音频文件"""
     print(f"📥 下载音频...")
+    try:
+        url = require_http_url(url)
+    except ValueError as e:
+        print(f"❌ 下载失败: {e}")
+        return False
     result = subprocess.run(
-        ['curl', '-L', '-o', dest_path, '-#', 
+        ['curl', '-fL', '-o', dest_path, '-#',
          '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-         url],
+         '--', url],
         timeout=600
     )
     if result.returncode != 0:
         print(f"❌ 下载失败")
         return False
-    size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    print(f"✅ 音频下载完成 ({size_mb:.1f} MB)")
+    # --fail 已挡掉 HTTP 4xx/5xx；再对文件本身做最小体积校验，避免空/损坏文件被当音频上传。
+    try:
+        size_bytes = os.path.getsize(dest_path)
+    except OSError:
+        print(f"❌ 下载失败: 输出文件缺失")
+        return False
+    if size_bytes < 1024:
+        print(f"❌ 下载失败: 文件过小 ({size_bytes} bytes)，疑似错误页而非音频")
+        return False
+    print(f"✅ 音频下载完成 ({size_bytes / (1024 * 1024):.1f} MB)")
     return True
 
 def save_link_txt(url: str, dest_path: str):
@@ -2087,13 +2119,18 @@ def save_metadata(info: dict, dest_path: str):
         json.dump(metadata, f, ensure_ascii=False, indent=2)
     print(f"✅ Metadata 保存完成")
 
+def escape_drive_query_value(value: str) -> str:
+    """转义 Google Drive 查询 DSL 里的字符串值（反斜杠与单引号），防止标题里的 ' 破坏/注入查询。"""
+    return (value or '').replace('\\', '\\\\').replace("'", "\\'")
+
+
 def drive_ls(parent_id: str, query: str = None, max_results: int = 1000) -> list:
     """列出 Drive 下的文件/文件夹"""
     gog = os.path.expanduser('~/.local/bin/gog')
     cmd = [gog, 'drive', 'ls', '--parent', parent_id, '--json', '--max', str(max_results)]
     if query:
         cmd += ['--query', query]
-    result = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+    result = run_capture(cmd)
     if result.returncode != 0 or not result.stdout.strip():
         return []
     try:
@@ -2109,14 +2146,15 @@ def resolve_drive_folder_id(folder_path: str) -> Optional[str]:
     parent_id = 'root'
     
     for folder_name in parts:
+        folder_name = folder_name.strip('- ')
         files = drive_ls(
             parent_id,
-            f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            f"name='{escape_drive_query_value(folder_name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
         )
         if not files:
             return None
         parent_id = files[0]['id']
-    
+
     return parent_id
 
 
@@ -2130,14 +2168,13 @@ def get_or_create_folder(folder_path: str) -> str:
         folder_name = folder_name.strip('- ')
         files = drive_ls(
             parent_id,
-            f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            f"name='{escape_drive_query_value(folder_name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
         )
         folder_id = files[0]['id'] if files else None
         
         if not folder_id:
-            mkdir_result = subprocess.run(
-                [gog, 'drive', 'mkdir', folder_name, '--parent', parent_id, '--json'],
-                capture_output=True, text=True, errors='replace'
+            mkdir_result = run_capture(
+                [gog, 'drive', 'mkdir', folder_name, '--parent', parent_id, '--json']
             )
             if mkdir_result.returncode == 0 and mkdir_result.stdout.strip():
                 try:
@@ -2167,8 +2204,8 @@ def upload_to_drive(local_path: str, drive_folder: str, filename: str) -> bool:
         return False
     
     upload_cmd = [gog, 'drive', 'upload', local_path, '--parent', folder_id, '--name', filename]
-    result = subprocess.run(upload_cmd, capture_output=True, text=True, errors='replace')
-    
+    result = run_capture(upload_cmd)
+
     if result.returncode != 0:
         print(f"❌ 上传失败: {result.stderr}")
         return False
@@ -2193,7 +2230,7 @@ def transcode_audio_to_notebooklm_mp3(audio_path: str) -> Optional[str]:
         '-b:a', '64k',
         out_path,
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+    res = run_capture(cmd, timeout=FFMPEG_SUBPROCESS_TIMEOUT)
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
         print(f"⚠️ mp3 fallback 转码失败: {(res.stderr or res.stdout or '').strip()[:500]}")
         return None
@@ -2254,6 +2291,39 @@ FAST_NOTE_CLIENT_TYPE = 'ObsidianPlugin'
 FAST_NOTE_CLIENT_VERSION = '1.22.15'
 FAST_NOTE_BACKUP_DIR = os.path.expanduser('~/.openclaw/workspace/.backups/fast-note')
 
+# 子进程硬超时（秒）。防止 nlm(headless Chrome/CDP) 或 gog 卡死后无限阻塞、拖垮串行任务。
+NLM_SUBPROCESS_TIMEOUT = 1800  # nlm 最长操作（source add --wait 大音频）也不该超过 30 分钟
+GOG_SUBPROCESS_TIMEOUT = 1800  # Drive 上传大文件可能几分钟；列目录/删除远快于此
+FFMPEG_SUBPROCESS_TIMEOUT = 1800
+
+
+def fast_note_connect(db_path: str) -> sqlite3.Connection:
+    """连接 Fast Note SQLite，并设置 busy_timeout，避免与在跑的 Fast Note server 抢锁时立即失败。"""
+    con = sqlite3.connect(db_path, timeout=10)
+    try:
+        con.execute('PRAGMA busy_timeout=5000')
+    except sqlite3.Error:
+        pass
+    return con
+
+
+def _timed_out_completed_process(cmd: list, seconds: int) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(cmd, 124, stdout='', stderr=f'timeout after {seconds}s')
+
+
+def run_capture(cmd: list, timeout: int = GOG_SUBPROCESS_TIMEOUT, **kwargs) -> subprocess.CompletedProcess:
+    """带硬超时地运行外部命令（gog/ffmpeg 等）。超时映射成 returncode=124 的失败结果，
+    保持调用方原有的 .returncode/.stdout/.stderr 判断逻辑，避免子进程卡死无限阻塞。"""
+    kwargs.setdefault('capture_output', True)
+    kwargs.setdefault('text', True)
+    kwargs.setdefault('errors', 'replace')
+    try:
+        return subprocess.run(cmd, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        label = cmd[0] if cmd else '?'
+        print(f"⏱️ 命令超时（{timeout}s），按失败处理: {label}")
+        return _timed_out_completed_process(cmd, timeout)
+
 
 def run_nlm_command(args: list[str], capture_output: bool = True) -> subprocess.CompletedProcess:
     """运行 nlm wrapper，并在未显式指定时自动注入 NLM_PROFILE。"""
@@ -2264,7 +2334,11 @@ def run_nlm_command(args: list[str], capture_output: bool = True) -> subprocess.
     supports_profile_option = not (args and args[0] == 'download')
     if profile and supports_profile_option and '--profile' not in cmd and '-p' not in cmd:
         cmd += ['--profile', profile]
-    return subprocess.run(cmd, capture_output=capture_output, text=True, errors='replace')
+    try:
+        return subprocess.run(cmd, capture_output=capture_output, text=True, errors='replace', timeout=NLM_SUBPROCESS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"⏱️ nlm 命令超时（{NLM_SUBPROCESS_TIMEOUT}s），按失败处理: {' '.join(args[:2])}")
+        return _timed_out_completed_process(cmd, NLM_SUBPROCESS_TIMEOUT)
 
 
 def run_nlm_command_for_profile(profile: str, args: list[str], capture_output: bool = True) -> subprocess.CompletedProcess:
@@ -2277,7 +2351,11 @@ def run_nlm_command_for_profile(profile: str, args: list[str], capture_output: b
     supports_profile_option = not (args and args[0] == 'download')
     if profile and supports_profile_option and '--profile' not in cmd and '-p' not in cmd:
         cmd += ['--profile', profile]
-    return subprocess.run(cmd, capture_output=capture_output, text=True, errors='replace', env=env)
+    try:
+        return subprocess.run(cmd, capture_output=capture_output, text=True, errors='replace', env=env, timeout=NLM_SUBPROCESS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"⏱️ nlm 命令超时（{NLM_SUBPROCESS_TIMEOUT}s），按失败处理: {' '.join(args[:2])}")
+        return _timed_out_completed_process(cmd, NLM_SUBPROCESS_TIMEOUT)
 
 
 def current_nlm_profile() -> str:
@@ -2470,6 +2548,7 @@ def cleanup_nlm_profile_chrome(profile: str) -> None:
             capture_output=True,
             text=True,
             errors='replace',
+            timeout=30,
         )
     except Exception as exc:
         print(f"⚠️ 无法枚举 Chrome 进程，跳过重启: {exc}")
@@ -3423,7 +3502,7 @@ def ensure_fast_note_folder(folder_path: str) -> int:
 
     now_ms = int(time.time() * 1000)
     now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    con = sqlite3.connect(FAST_NOTE_FOLDER_DB)
+    con = fast_note_connect(FAST_NOTE_FOLDER_DB)
     cur = con.cursor()
     parent_id = 0
     current_path = ''
@@ -3475,7 +3554,7 @@ def upsert_fast_note_markdown(folder_path: str, note_title: str, content: str) -
         (note_dir / 'snapshot.txt').write_text(content, encoding='utf-8')
 
     def append_note_history(note_id: int, version: int, created_at: str) -> None:
-        hist_con = sqlite3.connect(FAST_NOTE_NOTE_HISTORY_DB)
+        hist_con = fast_note_connect(FAST_NOTE_NOTE_HISTORY_DB)
         hist_cur = hist_con.cursor()
         hist_cur.execute(
             "insert into note_history (note_id, vault_id, path, content, content_hash, diff_patch, client_name, version, created_at, updated_at) values (?, 1, ?, '', ?, '', ?, ?, ?, NULL)",
@@ -3484,7 +3563,7 @@ def upsert_fast_note_markdown(folder_path: str, note_title: str, content: str) -
         hist_con.commit()
         hist_con.close()
 
-    con = sqlite3.connect(FAST_NOTE_NOTE_DB)
+    con = fast_note_connect(FAST_NOTE_NOTE_DB)
     cur = con.cursor()
     cur.execute(
         'select id, version, ctime, created_at from note where vault_id=1 and path=? and rename=0 order by id desc limit 1',
@@ -3529,7 +3608,7 @@ def upsert_fast_note_markdown(folder_path: str, note_title: str, content: str) -
     second_version = max(version, 1) + 1
     write_note_files(note_id)
 
-    con = sqlite3.connect(FAST_NOTE_NOTE_DB)
+    con = fast_note_connect(FAST_NOTE_NOTE_DB)
     cur = con.cursor()
     cur.execute(
         "update note set action='modify', rename=0, fid=?, path_hash=?, content='', content_hash=?, content_last_snapshot='', content_last_snapshot_hash=?, version=?, client_name=?, size=?, mtime=?, updated_timestamp=?, updated_at=? where id=?",
@@ -3544,7 +3623,7 @@ def upsert_fast_note_markdown(folder_path: str, note_title: str, content: str) -
     version = second_version
 
     verified_action = 'unknown'
-    con = sqlite3.connect(FAST_NOTE_NOTE_DB)
+    con = fast_note_connect(FAST_NOTE_NOTE_DB)
     cur = con.cursor()
     cur.execute('select action, version from note where id=?', (note_id,))
     verify_row = cur.fetchone()
@@ -4132,7 +4211,7 @@ def save_fast_note_attachment(filename: str, source_path: str, folder_path: str 
     content_hash = java_string_hash(hashlib.md5(data).hexdigest())
     path_hash = java_string_hash(rel_path)
 
-    con = sqlite3.connect(FAST_NOTE_FILE_DB)
+    con = fast_note_connect(FAST_NOTE_FILE_DB)
     cur = con.cursor()
     cur.execute('select id, ctime, created_at from file where vault_id=1 and path=? and rename=0 order by id desc limit 1', (rel_path,))
     row = cur.fetchone()
@@ -4160,7 +4239,7 @@ def save_fast_note_attachment(filename: str, source_path: str, folder_path: str 
     (file_dir / 'file.dat').write_bytes(data)
 
     try:
-        sync_con = sqlite3.connect(FAST_NOTE_SYNC_LOG_DB)
+        sync_con = fast_note_connect(FAST_NOTE_SYNC_LOG_DB)
         sync_cur = sync_con.cursor()
         sync_cur.execute(
             "insert into sync_log (uid, vault_id, type, action, changed_fields, path, path_hash, size, client_name, client_type, client_version, status, message, created_at) values (1, 1, 'file', ?, '', ?, ?, ?, ?, ?, ?, 1, '', ?)",
@@ -4228,7 +4307,7 @@ def attach_infographic_to_fast_note(note_path: str, notebook_id: str, artifact_i
 
     folder_path, basename = note_path.rsplit('/', 1)
     note_title = basename[:-3] if basename.lower().endswith('.md') else basename
-    note_con = sqlite3.connect(FAST_NOTE_NOTE_DB)
+    note_con = fast_note_connect(FAST_NOTE_NOTE_DB)
     note_cur = note_con.cursor()
     note_cur.execute('select id from note where vault_id=1 and path=? and rename=0 order by id desc limit 1', (note_path,))
     row = note_cur.fetchone()
@@ -4677,9 +4756,8 @@ def find_drive_episode_record(podcast_name: str, episode_id: str = '', episode_u
 def download_drive_file(file_id: str, output_path: str) -> bool:
     """下载 Drive 文件到指定路径"""
     gog = os.path.expanduser('~/.local/bin/gog')
-    result = subprocess.run(
-        [gog, 'drive', 'download', file_id, '--out', output_path],
-        capture_output=True, text=True
+    result = run_capture(
+        [gog, 'drive', 'download', file_id, '--out', output_path]
     )
     if result.returncode != 0:
         print(f"❌ Drive 下载失败: {result.stderr.strip() or result.stdout.strip()}")
@@ -4722,7 +4800,7 @@ def overwrite_drive_metadata_json(record: dict, refreshed_meta: dict) -> bool:
         file_id = f.get('id') or ''
         if not file_id:
             continue
-        delete_res = subprocess.run([gog, 'drive', 'delete', file_id, '--force'], capture_output=True, text=True, errors='replace')
+        delete_res = run_capture([gog, 'drive', 'delete', file_id, '--force'])
         if delete_res.returncode != 0:
             print(f"⚠️ 删除旧 metadata.json 失败: {delete_res.stderr.strip() or delete_res.stdout.strip()}")
             return False
@@ -4731,7 +4809,7 @@ def overwrite_drive_metadata_json(record: dict, refreshed_meta: dict) -> bool:
         metadata_path = os.path.join(tmpdir, 'metadata.json')
         save_metadata(refreshed_meta, metadata_path)
         upload_cmd = [gog, 'drive', 'upload', metadata_path, '--parent', folder_id, '--name', 'metadata.json']
-        result = subprocess.run(upload_cmd, capture_output=True, text=True, errors='replace')
+        result = run_capture(upload_cmd)
         if result.returncode != 0:
             print(f"⚠️ 上传新 metadata.json 失败: {result.stderr.strip() or result.stdout.strip()}")
             return False
@@ -4780,9 +4858,8 @@ def download_drive_file_json(file_id: str) -> Optional[dict]:
     """下载 Drive 上的小 JSON 文件并解析"""
     gog = os.path.expanduser('~/.local/bin/gog')
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = subprocess.run(
-            [gog, 'drive', 'download', file_id, '--out', tmpdir],
-            capture_output=True, text=True
+        result = run_capture(
+            [gog, 'drive', 'download', file_id, '--out', tmpdir]
         )
         if result.returncode != 0:
             return None
@@ -5005,9 +5082,8 @@ def dedupe_drive_podcast_folder(target: str, apply: bool = False) -> int:
     gog = os.path.expanduser('~/.local/bin/gog')
     for folder_id in delete_ids:
         print(f"🗑️  删除重复文件夹: {folder_id}")
-        result = subprocess.run(
-            [gog, 'drive', 'delete', folder_id, '--json', '--force'],
-            capture_output=True, text=True
+        result = run_capture(
+            [gog, 'drive', 'delete', folder_id, '--json', '--force']
         )
         if result.returncode != 0:
             raise RuntimeError(f"删除失败 {folder_id}: {result.stderr.strip() or result.stdout.strip()}")
@@ -5060,8 +5136,8 @@ def download_single_episode(episode_url: str, local_only: bool = False, podcast_
     direct_markdown = should_use_direct_markdown_for_podcast(podcast_name)
     skip_drive = should_skip_drive_for_podcast(podcast_name)
     
-    print(f"   📻 节目: {podcast_name}")
-    print(f"   📝 标题: {title}")
+    print(f"   📻 节目: {oneline(podcast_name)}")
+    print(f"   📝 标题: {oneline(title)}")
     print(f"   ⏱️  时长: {format_duration(duration)}")
     print()
 
@@ -5234,7 +5310,7 @@ def download_podcast(podcast_url: str, local_only: bool = False):
     podcast_name = podcast_info['title']
     total_count = podcast_info.get('episode_count', 0)
     
-    print(f"   📻 节目: {podcast_name}")
+    print(f"   📻 节目: {oneline(podcast_name)}")
     print(f"   📊 共 {total_count} 集")
     print()
     
@@ -5246,13 +5322,13 @@ def download_podcast(podcast_url: str, local_only: bool = False):
     direct_rss = f"https://feed.xyzfm.space/{pid}"
     try:
         test_result = subprocess.run(
-            ['curl', '-sL', '-o', '/dev/null', '-w', '%{http_code}', direct_rss],
+            ['curl', '-sL', '-o', '/dev/null', '-w', '%{http_code}', '--', direct_rss],
             capture_output=True, text=True, timeout=10
         )
         if test_result.stdout.strip() == '200':
             rss_url = direct_rss
             print(f"   ✅ 找到直接 RSS: {rss_url}")
-    except:
+    except Exception:
         pass
     
     # Method 2: Search Apple Podcasts
@@ -5272,7 +5348,7 @@ def download_podcast(podcast_url: str, local_only: bool = False):
             try:
                 data = json.loads(json_match.group(1))
                 episodes_from_page = data.get('props', {}).get('pageProps', {}).get('podcast', {}).get('episodes', [])
-            except:
+            except Exception:
                 pass
         
         if not episodes_from_page:
@@ -5327,7 +5403,7 @@ def download_podcast(podcast_url: str, local_only: bool = False):
             )
             if result == 'skipped':
                 skip_count += 1
-            elif result == 'downloaded':
+            elif result in ('downloaded', 'direct_markdown_saved', 'uploaded_from_drive'):
                 success_count += 1
                 eid = ep.get('eid', '')
                 normalized_url = normalize_episode_url(episode_url)
@@ -5458,6 +5534,11 @@ def main():
         print(f"   ❌ 失败: {fail_count}")
     elif 'xiaoyuzhoufm.com/podcast/' in url:
         if not force_all:
+            if not sys.stdin.isatty():
+                # 非交互（dispatcher/launchd 后台）下没有 TTY，input() 会抛 EOFError 崩栈。
+                # 明确要求显式 --yes，优雅退出而不是崩溃。
+                print("检测到播客主页(全集)。非交互环境下不自动下载全集；如需下载请显式传 --yes。已跳过。")
+                sys.exit(0)
             resp = input("检测到播客主页(全集)。是否下载全部? [y/N]: ").strip().lower()
             if resp not in ('y', 'yes'):
                 print("已取消。")

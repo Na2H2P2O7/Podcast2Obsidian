@@ -11,9 +11,11 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +28,28 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import xiaoyuzhou_dl as core  # noqa: E402
+
+
+class _TranscriptTimeout(Exception):
+    pass
+
+
+def call_with_timeout(fn, seconds: int):
+    """给无内建超时的调用（YouTube transcript 网络请求）加硬超时。
+    用 SIGALRM，仅主线程 + 支持 SIGALRM 的平台生效；否则退化为直接调用。"""
+    if not hasattr(signal, 'SIGALRM') or threading.current_thread() is not threading.main_thread():
+        return fn()
+
+    def _handler(signum, frame):
+        raise _TranscriptTimeout(f'timed out after {seconds}s')
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(int(seconds))
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 DEFAULT_FAST_NOTE_ROOT = os.environ.get('YOUTUBE_FAST_NOTE_ROOT', 'Video')
 YOUTUBE_UA = os.environ.get('YOUTUBE_UA', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36')
@@ -143,7 +167,7 @@ def format_timestamp(seconds: Any, with_hours: bool = False) -> str:
 
 def choose_best_transcript(video_id: str):
     api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
+    transcript_list = call_with_timeout(lambda: api.list(video_id), 120)
     transcripts = list(transcript_list)
     if not transcripts:
         raise RuntimeError('没有可用 YouTube 字幕')
@@ -172,7 +196,7 @@ def choose_best_transcript(video_id: str):
 
 def fetch_transcript_body(video_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     tr = choose_best_transcript(video_id)
-    fetched = tr.fetch()
+    fetched = call_with_timeout(lambda: tr.fetch(), 120)
     raw = fetched.to_raw_data()
     body = [
         {
@@ -428,8 +452,8 @@ def ingest(target: str, *, local: bool = False, no_notebooklm: bool = False, no_
     print(f'   URL: https://www.youtube.com/watch?v={video_id}')
     print('🔍 获取视频信息...')
     meta = fetch_video_meta(video_id)
-    print(f'   📻 节目: {podcast_name_for_youtube(meta)}')
-    print(f'   📝 标题: {meta.get("title") or "unknown"}')
+    print(f'   📻 节目: {core.oneline(podcast_name_for_youtube(meta))}')
+    print(f'   📝 标题: {core.oneline(meta.get("title") or "unknown")}')
     print(f'   👤 Channel: {meta.get("author") or "unknown"}')
     if meta.get('pub_date'):
         print(f'   📅 发布: {meta.get("pub_date")}')

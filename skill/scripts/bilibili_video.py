@@ -523,7 +523,10 @@ def download_audio_with_bili(target: str, out_dir: Path) -> Path:
         raise RuntimeError('未找到 bili CLI')
     cmd = [bili, 'audio', target, '--no-split', '-o', str(out_dir)]
     print('🎧 下载 Bilibili 音频: ' + ' '.join(cmd), flush=True)
-    res = subprocess.run(cmd, text=True, errors='replace')
+    try:
+        res = subprocess.run(cmd, text=True, errors='replace', timeout=1800)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('bili audio 超时（1800s）')
     if res.returncode != 0:
         raise RuntimeError(f'bili audio 失败: exit={res.returncode}')
     audio = find_audio_file(out_dir)
@@ -756,9 +759,9 @@ def ingest(target: str, *, local: bool = False, force_audio: bool = False, no_no
         title_for_display = f'{title} / P{page.get("page")} {page.get("part")}'
     else:
         title_for_display = title
-    print(f'   📻 节目: {podcast_name_for_bilibili(meta)}')
-    print(f'   📝 标题: {title_for_display}')
-    print(f'   👤 UP: {meta.get("author") or "unknown"}')
+    print(f'   📻 节目: {core.oneline(podcast_name_for_bilibili(meta))}')
+    print(f'   📝 标题: {core.oneline(title_for_display)}')
+    print(f'   👤 UP: {core.oneline(meta.get("author") or "unknown")}')
     print(f'   ⏱️  时长: {core.format_duration(page.get("duration") or meta.get("duration") or 0)}')
     print()
 

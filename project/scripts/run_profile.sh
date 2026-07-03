@@ -123,14 +123,16 @@ notify_result() {
   fi
 
   local result_line podcast title notebook_id note_id note_path infographic_ok summary
-  result_line="$(grep '📣 RESULT' "$LOG_FILE" | tail -1 || true)"
-  podcast="$(grep -E '^[[:space:]]*📻 节目:' "$LOG_FILE" | tail -1 | sed -E 's/^[[:space:]]*📻 节目:[[:space:]]*//' || true)"
-  title="$(grep -E '^[[:space:]]*📝 标题:' "$LOG_FILE" | tail -1 | sed -E 's/^[[:space:]]*📝 标题:[[:space:]]*//' || true)"
+  # 只认行首的 RESULT 行（worker 从列 0 打印），防止抓来的标题在正文里伪造出 📣 RESULT。
+  result_line="$(grep -E '^[[:space:]]*📣 RESULT' "$LOG_FILE" | tail -1 || true)"
+  # 提取的展示字段再剥一遍控制字符，纵深防御（worker 侧已 oneline）。
+  podcast="$(grep -E '^[[:space:]]*📻 节目:' "$LOG_FILE" | tail -1 | sed -E 's/^[[:space:]]*📻 节目:[[:space:]]*//' | tr -d '\000-\037' || true)"
+  title="$(grep -E '^[[:space:]]*📝 标题:' "$LOG_FILE" | tail -1 | sed -E 's/^[[:space:]]*📝 标题:[[:space:]]*//' | tr -d '\000-\037' || true)"
 
   if [[ -n "$result_line" ]]; then
     notebook_id="$(sed -nE 's/.*notebook_id=([^ ]+).*/\1/p' <<<"$result_line")"
     note_id="$(sed -nE 's/.*note_id=([^ ]+).*/\1/p' <<<"$result_line")"
-    note_path="$(sed -nE 's/.*note_path=(.*)$/\1/p' <<<"$result_line" | sed -E 's/[[:space:]]+(query_ok|fast_note_ok|infographic_ok|reason|bvid|cid|video_id|subtitle_lang|subtitle_language|subtitle_source|mode|audio_path)=.*$//')"
+    note_path="$(sed -nE 's/.*note_path=(.*)$/\1/p' <<<"$result_line" | sed -E 's/[[:space:]]+(query_ok|fast_note_ok|infographic_ok|reason|bvid|cid|video_id|subtitle_lang|subtitle_language|subtitle_source|mode|audio_path)=.*$//' | tr -d '\000-\037')"
     infographic_ok="$(sed -nE 's/.*infographic_ok=([^ ]+).*/\1/p' <<<"$result_line")"
   fi
 

@@ -258,19 +258,26 @@ def load_state(path: str):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if isinstance(data, dict) and isinstance(data.get('processed_urls'), dict):
-            if not isinstance(data.get('failed_urls'), dict):
-                data['failed_urls'] = {}
-            return data
-    except Exception:
-        pass
-    return default
+    except Exception as e:
+        # 文件存在但损坏（例如上次写到一半被杀）：绝不静默回退空 state，
+        # 否则会把所有 newsletter 单集当成新单集重跑 + 重复群发。宁可报错中止。
+        raise RuntimeError(f'state file 损坏，拒绝以空状态继续（会重复处理并重复推送）: {path}: {e}')
+    if isinstance(data, dict) and isinstance(data.get('processed_urls'), dict):
+        if not isinstance(data.get('failed_urls'), dict):
+            data['failed_urls'] = {}
+        return data
+    raise RuntimeError(f'state file 结构非法，拒绝以空状态继续: {path}')
 
 
 def save_state(path: str, state: dict):
     Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
+    # 原子写：先写 .tmp 再 os.replace，避免写到一半被杀留下截断文件。
+    tmp = f'{path}.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def prune_state(state: dict, ttl_hours: int = 168):
@@ -298,12 +305,31 @@ def prune_state(state: dict, ttl_hours: int = 168):
 
 
 def get_bot_token():
-    result = subprocess.run(
-        ['bash', '-lc', f"jq -r '.. | objects | select(has(\"botToken\")) | .botToken' '{OPENCLAW_CONFIG}' | head -n 1"],
-        capture_output=True, text=True
-    )
-    token = (result.stdout or '').strip()
-    if result.returncode != 0 or not token or token == 'null':
+    # 纯 Python 读取，替代 `bash -lc + jq`：去掉 shell 依赖、登录 profile 副作用与卡死风险。
+    try:
+        with open(OPENCLAW_CONFIG, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except Exception as e:
+        raise RuntimeError(f'无法读取 OpenClaw config: {e}')
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            tok = obj.get('botToken')
+            if isinstance(tok, str) and tok.strip() and tok.strip() != 'null':
+                return tok.strip()
+            for v in obj.values():
+                found = _walk(v)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for v in obj:
+                found = _walk(v)
+                if found:
+                    return found
+        return None
+
+    token = _walk(cfg)
+    if not token:
         raise RuntimeError('Telegram botToken not found')
     return token
 
@@ -314,10 +340,13 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         'text': text,
         'disable_web_page_preview': True,
     }
-    result = subprocess.run(
-        ['curl', '-sS', '-X', 'POST', f'https://api.telegram.org/bot{bot_token}/sendMessage', '-H', 'Content-Type: application/json', '-d', json.dumps(payload, ensure_ascii=False)],
-        capture_output=True, text=True
-    )
+    try:
+        result = subprocess.run(
+            ['curl', '-sS', '-m', '30', '-X', 'POST', f'https://api.telegram.org/bot{bot_token}/sendMessage', '-H', 'Content-Type: application/json', '-d', json.dumps(payload, ensure_ascii=False)],
+            capture_output=True, text=True, timeout=40
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('Telegram sendMessage 超时（40s）')
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
     body = json.loads(result.stdout or '{}')
