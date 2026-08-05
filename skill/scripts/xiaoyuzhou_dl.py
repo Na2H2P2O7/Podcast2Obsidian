@@ -2081,14 +2081,17 @@ def download_audio(url: str, dest_path: str) -> bool:
     except ValueError as e:
         print(f"❌ 下载失败: {e}")
         return False
+    # --no-progress-meter 取代 -#：无 TTY 时（cron/launchd/CI）进度条只会把日志灌成满屏
+    # `####`，排障时读不下去。同时捕获 stderr 并把退出码带进失败信息，否则只有一句
+    # "下载失败"，分不清 DNS(6) / HTTP 4xx(22) / 超时。
     result = subprocess.run(
-        ['curl', '-fL', '-o', dest_path, '-#',
+        ['curl', '-fL', '-o', dest_path, '--no-progress-meter',
          '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
          '--', url],
-        timeout=600
+        capture_output=True, text=True, timeout=600
     )
     if result.returncode != 0:
-        print(f"❌ 下载失败")
+        print(f"❌ 下载失败: curl exit={result.returncode} {(result.stderr or '').strip()[:300]}")
         return False
     # --fail 已挡掉 HTTP 4xx/5xx；再对文件本身做最小体积校验，避免空/损坏文件被当音频上传。
     try:
