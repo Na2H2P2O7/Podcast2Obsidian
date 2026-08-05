@@ -1372,16 +1372,33 @@ def require_http_url(url: str) -> str:
         raise ValueError(f"refusing non-http(s) url: {u!r}")
     return u
 
-def fetch_page(url: str) -> str:
-    """抓取网页内容 (使用 curl 避免 SSL 问题)"""
+def fetch_page(url: str, attempts: int = 4) -> str:
+    """抓取网页内容 (使用 curl 避免 SSL 问题)
+
+    有界退避重试：DNS / 网络瞬时抖动会让单次 curl 失败（典型是退出码 6
+    couldn't-resolve），一次失败不该当成真失败。另外 `-s` 会让 stderr 为空，
+    只抛 "curl failed:" 无从排查，所以把 returncode 和 url 带进异常消息。
+    """
     url = require_http_url(url)
-    result = subprocess.run(
-        ['curl', '-sL', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', '--', url],
-        capture_output=True, text=True, timeout=60
-    )
-    if result.returncode != 0:
-        raise Exception(f"curl failed: {result.stderr}")
-    return result.stdout
+    delay = 2
+    last = ''
+    for i in range(1, attempts + 1):
+        try:
+            result = subprocess.run(
+                ['curl', '-sL', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', '--', url],
+                capture_output=True, text=True, timeout=60
+            )
+        except subprocess.TimeoutExpired:
+            last = 'curl timeout 60s'
+        else:
+            if result.returncode == 0:
+                return result.stdout
+            last = f'curl exit={result.returncode} {(result.stderr or "").strip()}'.strip()
+        if i < attempts:
+            print(f'  ⚠️  fetch_page {i}/{attempts} 失败 ({last})，{delay}s 后重试: {url}', flush=True)
+            time.sleep(delay)
+            delay = min(delay * 2, 15)
+    raise Exception(f"curl failed after {attempts} attempts: {last} url={url}")
 
 def get_rss_from_apple(podcast_name: str) -> str:
     """从 Apple Podcasts 搜索播客并获取 RSS URL"""

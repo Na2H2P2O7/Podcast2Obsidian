@@ -355,6 +355,24 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     return body
 
 
+def notify_scan_failures(chat_id: str, scan_failures: list):
+    """本轮零产出且扫描失败时发告警——静默失败是最难发现的故障。
+
+    告警本身失败不应再抛出：此时已经没有可产出的内容，让退出码说话即可。
+    """
+    try:
+        bot_token = get_bot_token()
+        today = datetime.now(TZ).strftime('%Y%m%d')
+        lines = [f'{today}的新闻: ⚠️ 本轮无产出']
+        lines.append(f'{len(scan_failures)} 个订阅源抓取失败：')
+        for item in scan_failures:
+            lines.append(f"- {item['podcast_url']}: {item['reason']}")
+        send_telegram(bot_token, chat_id, '\n'.join(lines))
+        log(f'sent scan-failure alert to {chat_id}')
+    except Exception as e:
+        log(f'WARN 无法发送抓取失败告警: {e}')
+
+
 def extract_podcast_episodes(core, podcast_url: str):
     html = core.fetch_page(podcast_url)
     podcast_info = core.extract_podcast_info(html)
@@ -490,6 +508,7 @@ def main():
     processed_urls = state.get('processed_urls', {})
     failed_urls = state.get('failed_urls', {})
     found = []
+    scan_failures = []
 
     if args.only_url:
         ep = find_episode_in_news_sources(core, args.only_url, sources)
@@ -498,7 +517,15 @@ def main():
         found = [ep]
     else:
         for podcast_url in sources:
-            podcast_name, episodes = extract_podcast_and_recent_episodes(core, podcast_url, args.since_hours)
+            try:
+                podcast_name, episodes = extract_podcast_and_recent_episodes(core, podcast_url, args.since_hours)
+            except Exception as e:
+                # 单个订阅源扫描失败不再拖垮整轮：首个 URL 一次 DNS 抖动曾让所有节目
+                # 全部没跑，而通知只在处理循环之后发，于是整轮静默、无任何告警。
+                reason = str(e).strip() or 'unknown_error'
+                log(f'WARN scan failed but batch continues: {podcast_url} :: {reason}')
+                scan_failures.append({'podcast_url': podcast_url, 'reason': reason})
+                continue
             for ep in episodes:
                 if ep['episode_url'] in processed_urls:
                     continue
@@ -508,9 +535,12 @@ def main():
         if args.only_url:
             log(f'no matching episode found for replay: {args.only_url}')
         else:
-            log(f'no updates in last {args.since_hours}h')
+            log(f'no updates in last {args.since_hours}h; scan_failures={len(scan_failures)}')
         save_state(args.state_path, state)
-        return 0
+        # 全军覆没时必须出声，否则又是一次静默失败。
+        if scan_failures and not args.dry_run:
+            notify_scan_failures(args.chat_id, scan_failures)
+        return 1 if scan_failures else 0
 
     results = []
     failures = []
@@ -557,6 +587,12 @@ def main():
         lines.append(f'本轮有 {len(failures)} 条待重试：')
         for item in failures:
             lines.append(f"- {item['podcast_name']}: {item['reason']}")
+
+    if scan_failures:
+        lines.append('')
+        lines.append(f'⚠️ {len(scan_failures)} 个订阅源本轮抓取失败（未扫描，可能漏单集）：')
+        for item in scan_failures:
+            lines.append(f"- {item['podcast_url']}: {item['reason']}")
 
     lines.append('')
     lines.append('已保存到Vault。')

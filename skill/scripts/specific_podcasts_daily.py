@@ -244,8 +244,15 @@ def main():
     processed_urls = state.get('processed_urls', {})
     found = []
 
+    scan_fail_count = 0
     for podcast_url in sources:
-        podcast_name, episodes = extract_podcast_and_recent_episodes(core, podcast_url, args.since_hours)
+        try:
+            podcast_name, episodes = extract_podcast_and_recent_episodes(core, podcast_url, args.since_hours)
+        except Exception as e:
+            # 单个节目扫描失败不再拖垮整轮（与 news 同因：首个 URL 一次 DNS 抖动）。
+            scan_fail_count += 1
+            log(f'WARN scan failed but batch continues: {podcast_url} :: {e}')
+            continue
         log(f'scan {podcast_name or podcast_url}: {len(episodes)} candidate(s) in last {args.since_hours}h')
         for ep in episodes:
             if ep['episode_url'] in processed_urls:
@@ -253,9 +260,9 @@ def main():
             found.append(ep)
 
     if not found:
-        log(f'no updates in last {args.since_hours}h')
+        log(f'no updates in last {args.since_hours}h; scan_failures={scan_fail_count}')
         save_state(args.state_path, state)
-        return 0
+        return 1 if scan_fail_count else 0
 
     results = []
     fail_count = 0
@@ -283,7 +290,7 @@ def main():
     state['processed_urls'] = processed_urls
     state['updated_at'] = datetime.now(timezone.utc).isoformat()
     save_state(args.state_path, state)
-    log(f'processed {len(results)} update(s), {fail_count} failed')
+    log(f'processed {len(results)} update(s), {fail_count} failed, {scan_fail_count} scan failure(s)')
     return 0
 
 
