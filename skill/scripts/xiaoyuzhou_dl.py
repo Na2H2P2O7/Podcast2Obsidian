@@ -2084,15 +2084,68 @@ def download_audio(url: str, dest_path: str) -> bool:
     # --no-progress-meter 取代 -#：无 TTY 时（cron/launchd/CI）进度条只会把日志灌成满屏
     # `####`，排障时读不下去。同时捕获 stderr 并把退出码带进失败信息，否则只有一句
     # "下载失败"，分不清 DNS(6) / HTTP 4xx(22) / 超时。
-    result = subprocess.run(
-        ['curl', '-fL', '-o', dest_path, '--no-progress-meter',
-         '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-         '--', url],
-        capture_output=True, text=True, timeout=600
-    )
-    if result.returncode != 0:
-        print(f"❌ 下载失败: curl exit={result.returncode} {(result.stderr or '').strip()[:300]}")
-        return False
+    #
+    # 重试：一次瞬时 DNS 抖动就把整集判死过 —— 同一 URL 手动重发即成功，本该由脚本自己扛。
+    # 只对**可重试**的网络类错误退避重试；HTTP 4xx/5xx(22) 之类立即放弃，重试无意义。
+    # 重试时用 `-C -` 断点续传，避免几十 MB 音频从头再下。
+    RETRYABLE = {
+        6,   # couldn't resolve host
+        7,   # failed to connect
+        16,  # HTTP/2 framing error
+        18,  # partial file
+        28,  # operation timeout
+        35,  # SSL connect error
+        52,  # empty reply from server
+        55,  # send error
+        56,  # recv error
+    }
+    attempts = 3
+    delay = 3
+    for i in range(1, attempts + 1):
+        cmd = ['curl', '-fL', '-o', dest_path, '--no-progress-meter',
+               '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36']
+        # 仅在重试且已有部分内容时续传（首次必须全新下载，否则会拼到陈旧文件后面）。
+        resuming = False
+        if i > 1:
+            try:
+                if os.path.getsize(dest_path) > 0:
+                    cmd.append('-C')
+                    cmd.append('-')
+                    resuming = True
+            except OSError:
+                pass
+        cmd.extend(['--', url])
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            rc, detail = 28, 'curl timeout 600s'
+        else:
+            rc = result.returncode
+            detail = (result.stderr or '').strip()
+            if rc == 0:
+                break
+        # 33 = 服务端不支持 Range，续传这条路走不通：删掉残片、下一轮从头下。
+        if resuming and rc == 33:
+            print('  ⚠️  服务端不支持断点续传，丢弃残片后重下')
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+        elif rc not in RETRYABLE:
+            print(f"❌ 下载失败: curl exit={rc}（不可重试）{detail[:300]}")
+            return False
+        if i == attempts:
+            print(f"❌ 下载失败: curl exit={rc}，已重试 {attempts} 次 {detail[:300]}")
+            return False
+        # 下一轮到底是续传还是从头下，取决于此刻磁盘上还有没有残片。
+        try:
+            will_resume = os.path.getsize(dest_path) > 0
+        except OSError:
+            will_resume = False
+        print(f"  ⚠️  下载失败 {i}/{attempts} (curl exit={rc})，{delay}s 后"
+              f"{'续传' if will_resume else '重下'}: {detail[:120]}")
+        time.sleep(delay)
+        delay = min(delay * 2, 20)
     # --fail 已挡掉 HTTP 4xx/5xx；再对文件本身做最小体积校验，避免空/损坏文件被当音频上传。
     try:
         size_bytes = os.path.getsize(dest_path)
@@ -4328,11 +4381,13 @@ def insert_infographic_embed_into_markdown(markdown: str, embed_filename: str) -
 
 
 
-def attach_infographic_to_fast_note(note_path: str, notebook_id: str, artifact_id: str = '') -> Optional[dict]:
+def attach_infographic_to_fast_note(note_path: str, notebook_id: str, artifact_id: str = '',
+                                    download_timeout_seconds: int = 600) -> Optional[dict]:
     safe_name = f'NotebookLM infographic {notebook_id[:8]}.png'
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, safe_name)
-        ok = poll_download_infographic(notebook_id, out, artifact_id=artifact_id, timeout_seconds=600, poll_seconds=20)
+        ok = poll_download_infographic(notebook_id, out, artifact_id=artifact_id,
+                                       timeout_seconds=download_timeout_seconds, poll_seconds=20)
         if not ok:
             print('⚠️ infographic 下载轮询超时')
             return None
@@ -4416,17 +4471,53 @@ def finalize_default_infographics(notebook_id: str, fast_note: Optional[dict], t
     if trigger_state:
         before_ids = set(trigger_state.get('before_ids') or [])
 
-    artifact = wait_for_new_infographic_artifact(notebook_id, before_ids=before_ids, timeout_seconds=600, poll_seconds=20)
-    if not artifact:
-        artifact = latest_completed_infographic_artifact(notebook_id, exclude_ids=before_ids)
+    # NotebookLM 侧的 infographic 有时会真的卡死（浏览器里同样下不下来）。原逻辑是
+    # "等 600s 生成 + 等 600s 下载"，超时就放弃 —— 干等 20 分钟毫无产出。
+    # 改成有界轮次：等不到就**删掉卡住的 artifact 再触发一个新的**，而不是继续等同一个。
+    # 轮次与单轮等待可用环境变量覆盖；默认 2 轮 × (300s 生成 + 300s 下载)，
+    # 总上限与改前持平，但第二轮是一次真正的新尝试。
+    rounds = max(1, int(os.environ.get('P2O_INFOGRAPHIC_ROUNDS', '2') or 2))
+    wait_seconds = max(60, int(os.environ.get('P2O_INFOGRAPHIC_WAIT_SECONDS', '300') or 300))
 
-    artifact_id = _artifact_id(artifact) if artifact else ''
-    attached = attach_infographic_to_fast_note(fast_note['note_path'], notebook_id, artifact_id=artifact_id)
-    if not attached:
-        return False
+    # seen 累积所有"不该再盯着"的 artifact：本来就存在的 + 每轮失败被删掉的。
+    # 只加不减，否则会反复认领同一个卡死的 artifact 而永远收敛不了。
+    seen = set(before_ids)
 
-    print(f"🖼️ infographic 已写入 Fast Note: {attached['embed_filename']}")
-    return True
+    for attempt in range(1, rounds + 1):
+        artifact = wait_for_new_infographic_artifact(
+            notebook_id, before_ids=seen, timeout_seconds=wait_seconds, poll_seconds=20)
+        if not artifact:
+            artifact = latest_completed_infographic_artifact(notebook_id, exclude_ids=seen)
+
+        artifact_id = _artifact_id(artifact) if artifact else ''
+        attached = attach_infographic_to_fast_note(
+            fast_note['note_path'], notebook_id, artifact_id=artifact_id,
+            download_timeout_seconds=wait_seconds)
+        if attached:
+            print(f"🖼️ infographic 已写入 Fast Note: {attached['embed_filename']}")
+            return True
+
+        if attempt >= rounds:
+            print(f'⚠️ infographic {rounds} 轮均未产出，放弃（笔记正文与总结不受影响）')
+            return False
+
+        # 取消这一轮卡住的 artifact，避免它继续占位并被下一轮再次认领。
+        if artifact_id:
+            print(f'🗑️ 取消卡住的 infographic artifact: {artifact_id}')
+            res = run_nlm_command(['delete', 'artifact', notebook_id, artifact_id, '--confirm'])
+            if res.returncode != 0:
+                print(f'⚠️ 取消失败（继续重触发）: {(res.stderr or res.stdout or "").strip()[:200]}')
+            seen.add(artifact_id)
+
+        print(f'🔁 重新触发 infographic（第 {attempt + 1}/{rounds} 轮）')
+        # fast_note=None 是故意的：绕过"已有 embed 就跳过"的短路，这里就是要强制重新生成。
+        retrigger = trigger_default_infographics(notebook_id, fast_note=None)
+        seen |= set(retrigger.get('before_ids') or [])
+        if not retrigger.get('ok'):
+            print('⚠️ infographic 重新触发失败，放弃')
+            return False
+
+    return False
 
 
 def create_default_infographics(notebook_id: str, fast_note: Optional[dict] = None) -> bool:
