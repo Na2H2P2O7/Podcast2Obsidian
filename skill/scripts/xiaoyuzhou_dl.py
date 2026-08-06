@@ -4233,6 +4233,30 @@ def wait_for_new_infographic_artifact(notebook_id: str, before_ids: Optional[set
 
 
 
+def pending_infographic_artifact_ids(notebook_id: str, exclude_ids: Optional[set[str]] = None) -> list:
+    """列出**未完成**的 infographic artifact id（即生成侧卡死的那种）。
+
+    `wait_for_new_infographic_artifact` 超时只返回 None，`latest_completed_...` 又只认已完成的，
+    所以卡死的 artifact（实测 status=unknown、永远不进 completed）在两处都拿不到 id。
+    没有 id 就无法取消它，重触发也会被它继续占位 —— 这个函数专门补这个洞。
+    """
+    exclude_ids = exclude_ids or set()
+    try:
+        items = _parse_studio_status_items(notebook_id)
+    except RuntimeError:
+        return []
+    out = []
+    for item in items:
+        if _artifact_kind(item) != 'infographic':
+            continue
+        if _artifact_status(item) in {'completed', 'complete', 'ready', 'done'}:
+            continue
+        aid = _artifact_id(item)
+        if aid and aid not in exclude_ids:
+            out.append(aid)
+    return out
+
+
 def latest_completed_infographic_artifact(notebook_id: str, exclude_ids: Optional[set[str]] = None) -> Optional[dict]:
     exclude_ids = exclude_ids or set()
     try:
@@ -4501,13 +4525,31 @@ def finalize_default_infographics(notebook_id: str, fast_note: Optional[dict], t
             print(f'⚠️ infographic {rounds} 轮均未产出，放弃（笔记正文与总结不受影响）')
             return False
 
-        # 取消这一轮卡住的 artifact，避免它继续占位并被下一轮再次认领。
+        # 这一轮为什么失败？两种情况的正确处置**完全相反**，必须分开：
+        #
+        #   a) 已经拿到 completed 的 artifact，只是下不下来
+        #      → 图在服务端是好的（实测：预热 DNS 后同一个 artifact 立刻下成 5.6MB PNG）。
+        #        失败几乎总是本机网络/DNS 抖动。**绝对不能删** —— 删掉等于毁掉一张
+        #        已经生成好的图，还要再花几分钟重新生成。下一轮重试下载同一个即可。
+        #        （不加入 seen：下一轮要能重新认领它。）
+        #
+        #   b) 压根没有 completed 的 artifact —— 它永远停在 status=unknown
+        #      → 这才是生成侧真卡死，删掉重触发是唯一出路。
+        #        注意此时 wait/latest 两个函数都返回 None，必须另查"未完成"的那些拿 id。
         if artifact_id:
-            print(f'🗑️ 取消卡住的 infographic artifact: {artifact_id}')
-            res = run_nlm_command(['delete', 'artifact', notebook_id, artifact_id, '--confirm'])
+            print(f'⚠️ infographic 已生成但下载失败（多为本机网络/DNS 抖动）；'
+                  f'保留 artifact {artifact_id}，下一轮重试下载')
+            continue
+
+        stuck_ids = pending_infographic_artifact_ids(notebook_id, exclude_ids=seen)
+        if not stuck_ids:
+            print('⚠️ 未找到可取消的 infographic artifact，直接重触发')
+        for stuck_id in stuck_ids:
+            print(f'🗑️ 取消卡死的 infographic artifact（生成侧未完成）: {stuck_id}')
+            res = run_nlm_command(['delete', 'artifact', notebook_id, stuck_id, '--confirm'])
             if res.returncode != 0:
                 print(f'⚠️ 取消失败（继续重触发）: {(res.stderr or res.stdout or "").strip()[:200]}')
-            seen.add(artifact_id)
+            seen.add(stuck_id)
 
         print(f'🔁 重新触发 infographic（第 {attempt + 1}/{rounds} 轮）')
         # fast_note=None 是故意的：绕过"已有 embed 就跳过"的短路，这里就是要强制重新生成。
