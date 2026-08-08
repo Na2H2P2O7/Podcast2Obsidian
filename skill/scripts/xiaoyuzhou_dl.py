@@ -3733,6 +3733,33 @@ def upsert_fast_note_markdown(folder_path: str, note_title: str, content: str) -
             verified_action = 'modify'
     con.close()
 
+    # 写 sync_log：附件路径（save_fast_note_attachment）一直有写，笔记这条路径原本**没写**，
+    # 于是直写的笔记在 sync_log 里查不到记录，其他客户端可能收不到变更通知
+    # （实测有 8 篇笔记因此一直没下发到另一台机器，只能人工从服务端补拉）。
+    # 与附件那边保持一致：同样的 client 三元组、status=1。
+    # 失败只告警不抛出：笔记本体已落库，不该因为记账失败让整集判失败。
+    try:
+        sync_con = fast_note_connect(FAST_NOTE_SYNC_LOG_DB)
+        sync_cur = sync_con.cursor()
+        sync_cur.execute(
+            "insert into sync_log (uid, vault_id, type, action, changed_fields, path, path_hash, size, client_name, client_type, client_version, status, message, created_at) values (1, 1, 'note', ?, ?, ?, ?, ?, ?, ?, ?, 1, '', ?)",
+            (
+                'create' if created_new_note else 'modify',
+                '' if created_new_note else 'content,mtime',
+                note_path,
+                path_hash,
+                size,
+                FAST_NOTE_CLIENT_NAME,
+                FAST_NOTE_CLIENT_TYPE,
+                FAST_NOTE_CLIENT_VERSION,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            ),
+        )
+        sync_con.commit()
+        sync_con.close()
+    except Exception as e:
+        print(f'⚠️ Fast Note note sync_log 写入失败（继续）: {e}')
+
     return {
         'note_id': note_id,
         'note_path': note_path,
