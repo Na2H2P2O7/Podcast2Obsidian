@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -52,6 +53,8 @@ def call_with_timeout(fn, seconds: int):
         signal.signal(signal.SIGALRM, old_handler)
 
 DEFAULT_FAST_NOTE_ROOT = os.environ.get('YOUTUBE_FAST_NOTE_ROOT', 'Video')
+# 音频兜底下载的超时；长视频（几小时的讲座/播客）可能很慢，给足时间。
+YOUTUBE_AUDIO_TIMEOUT = int(os.environ.get('YOUTUBE_AUDIO_TIMEOUT', '1800'))
 YOUTUBE_UA = os.environ.get('YOUTUBE_UA', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36')
 
 
@@ -236,15 +239,16 @@ def is_chinese_subtitle(subtitle_info: dict[str, Any]) -> bool:
     return code.startswith('zh') or 'chinese' in language or '中文' in language or '汉语' in language
 
 
-def build_youtube_prompt(subtitle_info: Optional[dict[str, Any]] = None) -> str:
+def build_youtube_prompt(subtitle_info: Optional[dict[str, Any]] = None, *, subtitle_available: bool = True) -> str:
     subtitle_info = subtitle_info or {}
-    if is_chinese_subtitle(subtitle_info):
+    if not subtitle_available:
+        # 音频兜底：没有字幕可供判断语种，交给 NotebookLM 自己听，但输出仍强制中文。
+        lang_instruction = '音频语种未知，无论原文是什么语言，都必须用中文输出总结。'
+    elif is_chinese_subtitle(subtitle_info):
         lang_instruction = '字幕是中文，请用中文输出。'
-        summary_lang = '中文'
     else:
         lang = subtitle_info.get('language') or subtitle_info.get('language_code') or '外文'
         lang_instruction = f'检测到字幕语言是 {lang}，不是中文；请必须用中文输出总结，不要沿用原文语言。'
-        summary_lang = '中文'
     return f'请根据这个 YouTube 视频内容进行结构化总结，包含二级标题，按原顺序输出，必要时使用三级标题，三级标题下请写简洁要点，避免过长整段。{lang_instruction} 不要写导言、结语、编者按或“以下是总结”等套话，直接从第一个二级标题开始。'
 
 
@@ -282,7 +286,7 @@ def podcast_name_for_youtube(meta: dict[str, Any]) -> str:
     return f'YouTube - {author}' if author else 'YouTube'
 
 
-def build_youtube_markdown(meta: dict[str, Any], *, answer: str = '', summary: str = '', transcript_body: Optional[list[dict[str, Any]]] = None, subtitle_info: Optional[dict[str, Any]] = None) -> str:
+def build_youtube_markdown(meta: dict[str, Any], *, answer: str = '', summary: str = '', transcript_body: Optional[list[dict[str, Any]]] = None, subtitle_info: Optional[dict[str, Any]] = None, subtitle_available: bool = True) -> str:
     title = meta.get('title') or 'YouTube Video'
     author = meta.get('author') or 'unknown'
     pub_date = meta.get('pub_date') or ''
@@ -298,9 +302,10 @@ def build_youtube_markdown(meta: dict[str, Any], *, answer: str = '', summary: s
         f'channel: {yaml_quote(author)}',
         f'title: {yaml_quote(f"[{title}]({video_url})")}',
         f'video_id: {yaml_quote(video_id)}',
-        'subtitle: yes',
-        *( [f'subtitle_language: {yaml_quote(subtitle_info.get("language_code") or subtitle_info.get("language") or "")}' ] if subtitle_info else [] ),
-        *( [f'subtitle_source: {yaml_quote(subtitle_info.get("source") or "")}' ] if subtitle_info else [] ),
+        f'subtitle: {"yes" if subtitle_available else "no"}',
+        *( [f'subtitle_language: {yaml_quote(subtitle_info.get("language_code") or subtitle_info.get("language") or "")}' ] if subtitle_available and subtitle_info else [] ),
+        *( [f'subtitle_source: {yaml_quote(subtitle_info.get("source") or "")}' ] if subtitle_available and subtitle_info else [] ),
+        *( ['source: audio'] if not subtitle_available else [] ),
         *( [f'Release Date: {pub_date}'] if pub_date else [] ),
         '---',
     ]))
@@ -333,6 +338,109 @@ def build_youtube_markdown(meta: dict[str, Any], *, answer: str = '', summary: s
         parts.append('## 字幕全文\n\n' + transcript)
 
     return '\n\n'.join(part.strip() for part in parts if part and part.strip()) + '\n'
+
+
+def find_audio_file(root: Path) -> Path:
+    """挑出下载目录里最大的音频文件（与 bilibili 音频兜底同构）。"""
+    candidates = []
+    for ext in ('*.m4a', '*.mp3', '*.aac', '*.wav', '*.flac', '*.opus', '*.webm'):
+        candidates.extend(root.rglob(ext))
+    if not candidates:
+        raise RuntimeError(f'yt-dlp 未产生音频文件: {root}')
+    candidates.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+    return candidates[0]
+
+
+def find_ffmpeg() -> str:
+    """定位 ffmpeg。launchd 下 PATH 很窄（不含 ~/.local/bin），所以显式补几个常见位置。"""
+    found = shutil.which('ffmpeg')
+    if found:
+        return found
+    for cand in (Path.home() / '.local/bin/ffmpeg', Path('/usr/local/bin/ffmpeg'), Path('/opt/homebrew/bin/ffmpeg')):
+        if cand.exists():
+            return str(cand)
+    return ''
+
+
+_YTDLP_PYTHON: Optional[str] = None
+
+
+def find_ytdlp_python() -> str:
+    """找一个能 `import yt_dlp` 的解释器。
+
+    **不能想当然用 sys.executable**：本脚本跑在装了 youtube_transcript_api 的 venv 里，
+    而 yt_dlp 可能只装在系统 Python 上（实测两者恰好分处两个解释器，
+    没有任何一个同时拥有两者）。所以逐个探测，用哪个都行。
+    结果缓存，避免每次兜底都反复起子进程。
+    """
+    global _YTDLP_PYTHON
+    if _YTDLP_PYTHON is not None:
+        return _YTDLP_PYTHON
+    candidates = [
+        sys.executable,
+        shutil.which('python3') or '',
+        '/usr/local/bin/python3',
+        '/opt/homebrew/bin/python3',
+    ]
+    seen = set()
+    for py in candidates:
+        if not py or py in seen or not Path(py).exists():
+            continue
+        seen.add(py)
+        try:
+            res = subprocess.run([py, '-c', 'import yt_dlp'], capture_output=True, timeout=60)
+        except Exception:
+            continue
+        if res.returncode == 0:
+            _YTDLP_PYTHON = py
+            return py
+    _YTDLP_PYTHON = ''
+    return ''
+
+
+def download_audio_with_ytdlp(target: str, out_dir: Path) -> Path:
+    """下载 YouTube 音频，供无字幕时上传 NotebookLM。
+
+    走 `python -m yt_dlp` 而不是独立的 yt-dlp 可执行文件：本机没装 CLI，
+    但 yt_dlp 作为库存在于运行本脚本的解释器里（用 sys.executable 保证同一个）。
+
+    **必须用 -x 抽音频，不能只靠 `-f bestaudio`**：实测这台机器上没有 JS runtime，
+    加上 YouTube 的 SABR-only 实验，audio-only 格式**一个都拿不到**，
+    `bestaudio/best` 会静默 fallback 成整段视频（360p mp4 35MB）。
+    交给 ffmpeg 抽成 m4a 后同一个视频只有 13.6MB，且确保上传的是音频而非视频。
+    """
+    ytdlp_py = find_ytdlp_python()
+    if not ytdlp_py:
+        raise RuntimeError(
+            'yt_dlp 不可用：本脚本所在解释器及常见 python3 均无法 import yt_dlp。'
+            '请在其中之一安装（pip install -U yt-dlp）后重试'
+        )
+    ffmpeg = find_ffmpeg()
+    cmd = [
+        ytdlp_py, '-m', 'yt_dlp',
+        '--no-update',
+        '-f', 'bestaudio/best',
+        '-x', '--audio-format', 'm4a',
+        '--no-playlist',
+        '--no-progress',
+        '-o', str(out_dir / '%(title).80s.%(ext)s'),
+    ]
+    if ffmpeg:
+        cmd += ['--ffmpeg-location', ffmpeg]
+    cmd += ['--', target]
+    print(f'🎧 下载 YouTube 音频 (yt-dlp -x m4a, py={ytdlp_py}, ffmpeg={ffmpeg or "auto"}) …', flush=True)
+    try:
+        res = subprocess.run(cmd, text=True, errors='replace', capture_output=True, timeout=YOUTUBE_AUDIO_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f'yt-dlp 超时（{YOUTUBE_AUDIO_TIMEOUT}s）')
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or '').strip().splitlines()
+        tail = detail[-1] if detail else ''
+        raise RuntimeError(f'yt-dlp 失败: exit={res.returncode} {tail[:300]}')
+    audio = find_audio_file(out_dir)
+    size_mb = audio.stat().st_size / (1024 * 1024)
+    print(f'✅ 音频文件: {audio.name} ({size_mb:.1f} MB)')
+    return audio
 
 
 def ensure_youtube_nlm_profile() -> None:
@@ -383,16 +491,16 @@ def add_text_source_to_notebook(notebook_id: str, title: str, text: str) -> Opti
     return sid or ''
 
 
-def save_youtube_summary_to_fast_note(meta: dict[str, Any], *, answer: str, summary: str = '', transcript_body: Optional[list[dict[str, Any]]] = None, subtitle_info: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def save_youtube_summary_to_fast_note(meta: dict[str, Any], *, answer: str, summary: str = '', transcript_body: Optional[list[dict[str, Any]]] = None, subtitle_info: Optional[dict[str, Any]] = None, subtitle_available: bool = True) -> dict[str, Any]:
     author = core.normalize_fast_note_segment(meta.get('author') or 'unknown')
     folder_path = f'{DEFAULT_FAST_NOTE_ROOT}/{author}'
-    markdown = build_youtube_markdown(meta, answer=answer, summary=summary, transcript_body=transcript_body, subtitle_info=subtitle_info)
+    markdown = build_youtube_markdown(meta, answer=answer, summary=summary, transcript_body=transcript_body, subtitle_info=subtitle_info, subtitle_available=subtitle_available)
     result = core.upsert_fast_note_markdown(folder_path, note_title_for_video(meta), markdown)
     result['clean_answer'] = markdown
     return result
 
 
-def run_youtube_notebooklm_summary(notebook_id: str, source_id: Optional[str], meta: dict[str, Any], body: list[dict[str, Any]], subtitle_info: dict[str, Any], *, no_infographic: bool = False) -> dict[str, Any]:
+def run_youtube_notebooklm_summary(notebook_id: str, source_id: Optional[str], meta: dict[str, Any], body: list[dict[str, Any]], subtitle_info: dict[str, Any], *, no_infographic: bool = False, subtitle_available: bool = True) -> dict[str, Any]:
     result = {'ok': False, 'query_ok': False, 'infographic_ok': True, 'fast_note': None, 'answer': '', 'summary': ''}
     if not core.ensure_nlm_auth():
         result['infographic_ok'] = False
@@ -403,7 +511,7 @@ def run_youtube_notebooklm_summary(notebook_id: str, source_id: Optional[str], m
     if cfg_res.returncode != 0:
         print(f"⚠️ 配置回答长度失败: {cfg_res.stderr.strip() or cfg_res.stdout.strip()}")
 
-    prompt = build_youtube_prompt(subtitle_info)
+    prompt = build_youtube_prompt(subtitle_info, subtitle_available=subtitle_available)
     print(f'💬 触发 YouTube 总结: {prompt[:120]}')
     try:
         answer = core.run_notebook_query_with_recovery(notebook_id, prompt, audio_source_id=source_id or None, enforce_complete=True)
@@ -420,7 +528,7 @@ def run_youtube_notebooklm_summary(notebook_id: str, source_id: Optional[str], m
             result['summary'] = core.clean_notebooklm_answer(summary_text).strip()
         except Exception as e:
             print(f'⚠️ 摘要生成失败（继续）: {e}')
-        fast_note = save_youtube_summary_to_fast_note(meta, answer=answer, summary=result['summary'], transcript_body=body, subtitle_info=subtitle_info)
+        fast_note = save_youtube_summary_to_fast_note(meta, answer=answer, summary=result['summary'], transcript_body=body, subtitle_info=subtitle_info, subtitle_available=subtitle_available)
         result['fast_note'] = fast_note
         result['ok'] = True
         print(f"📝 已保存到 Fast Note: {fast_note['note_path']} (note_id={fast_note['note_id']})")
@@ -444,7 +552,82 @@ def write_local_artifacts(out_dir: Path, meta: dict[str, Any], markdown: str, bo
     return md_path
 
 
-def ingest(target: str, *, local: bool = False, no_notebooklm: bool = False, no_infographic: bool = False) -> str | bool:
+def _ingest_audio_mode(
+    target: str,
+    video_id: str,
+    meta: dict[str, Any],
+    *,
+    local: bool,
+    no_notebooklm: bool,
+    no_infographic: bool,
+    keep_temp: bool,
+    subtitle_reason: str,
+) -> str | bool:
+    """无字幕兜底：下载音频 → 上传 NotebookLM → 总结写回 Fast Note。
+
+    结构与 bilibili_video.py 的音频分支一致，只是下载器换成 yt-dlp。
+    """
+    if no_notebooklm:
+        print('⏭️ 已设置 --no-notebooklm：不上传 NotebookLM')
+        print(f'📣 RESULT status=skipped mode=audio notebook_id=none note_id=none note_path=none reason=no_notebooklm video_id={video_id} subtitle=no')
+        return 'audio_skipped'
+
+    tmp_obj = tempfile.TemporaryDirectory(prefix='core-youtube-')
+    tmpdir = Path(tmp_obj.name)
+    try:
+        audio_path = download_audio_with_ytdlp(target, tmpdir)
+
+        if local:
+            author = core.sanitize_filename(meta.get('author') or 'unknown')
+            title_safe = core.sanitize_filename(note_title_for_video(meta))
+            dest_dir = Path.home() / 'Downloads' / 'Video' / author / title_safe
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_audio = dest_dir / audio_path.name
+            shutil.copy2(audio_path, dest_audio)
+            (dest_dir / 'metadata.json').write_text(json.dumps({'meta': meta}, ensure_ascii=False, indent=2), encoding='utf-8')
+            print(f'🎉 已保存本地音频: {dest_audio}')
+            print(f'📣 RESULT status=success mode=audio-local notebook_id=none note_id=none note_path=none audio_path={dest_audio} video_id={video_id} subtitle=no')
+            return 'audio_local'
+
+        ensure_youtube_nlm_profile()
+        print('📒 上传到 NotebookLM (YouTube 音频)...')
+        notebook_id = create_or_reuse_notebook(notebook_title_for_youtube(meta))
+        if not notebook_id:
+            print(f'📣 RESULT status=partial mode=audio notebook_id=none note_id=none note_path=none reason=notebook_create_failed video_id={video_id} subtitle=no')
+            return False
+
+        upload_result = core.guarded_add_audio_source(notebook_id, str(audio_path), max_wait_seconds=core.NLM_AUDIO_UPLOAD_MAX_WAIT_SECONDS)
+        audio_source_id = upload_result.get('audio_source_id')
+        if upload_result.get('status') != 'confirmed':
+            reason = upload_result.get('reason') or 'notebooklm_audio_source_unconfirmed'
+            print(f'📣 RESULT status=partial mode=audio notebook_id={notebook_id} note_id=none note_path=none reason={json.dumps(reason, ensure_ascii=False)} video_id={video_id} subtitle=no')
+            return False
+        if audio_source_id:
+            print(f'✅ 音频 source 已创建: {audio_source_id}')
+
+        summary = run_youtube_notebooklm_summary(
+            notebook_id,
+            audio_source_id or None,
+            meta,
+            [],
+            {},
+            no_infographic=no_infographic,
+            subtitle_available=False,
+        )
+        fn = summary.get('fast_note')
+        if summary.get('ok') and fn:
+            print(f'📣 RESULT status=success mode=audio notebook_id={notebook_id} note_id={fn["note_id"]} note_path={fn["note_path"]} query_ok=1 fast_note_ok=1 infographic_ok={1 if summary.get("infographic_ok") else 0} video_id={video_id} subtitle=no fallback_reason={json.dumps(subtitle_reason, ensure_ascii=False)}')
+            return 'audio_notebooklm'
+        print(f'📣 RESULT status=partial mode=audio notebook_id={notebook_id} note_id=none note_path=none query_ok={1 if summary.get("query_ok") else 0} fast_note_ok={1 if fn else 0} infographic_ok={1 if summary.get("infographic_ok") else 0} reason="query_or_fast_note_incomplete" video_id={video_id} subtitle=no')
+        return False
+    finally:
+        if keep_temp:
+            print(f'🧪 保留临时目录: {tmpdir}')
+        else:
+            tmp_obj.cleanup()
+
+
+def ingest(target: str, *, local: bool = False, force_audio: bool = False, no_notebooklm: bool = False, no_infographic: bool = False, keep_temp: bool = False) -> str | bool:
     video_id = extract_video_id(target)
     if not video_id:
         raise RuntimeError('无法解析 YouTube video id')
@@ -459,9 +642,33 @@ def ingest(target: str, *, local: bool = False, no_notebooklm: bool = False, no_
         print(f'   📅 发布: {meta.get("pub_date")}')
     print()
 
-    print('🔎 获取 YouTube 字幕...')
-    body, subtitle_info = fetch_transcript_body(video_id)
-    print(f"   字幕: {subtitle_info.get('language') or ''} / {subtitle_info.get('language_code') or ''} / {subtitle_info.get('source') or ''} / lines={len(body)}")
+    body: list[dict[str, Any]] = []
+    subtitle_info: dict[str, Any] = {}
+    subtitle_reason = ''
+    if force_audio:
+        print('🎧 已指定 --force-audio，跳过字幕模式')
+    else:
+        print('🔎 获取 YouTube 字幕...')
+        try:
+            body, subtitle_info = fetch_transcript_body(video_id)
+        except Exception as e:
+            # 字幕缺失/被禁用/取回失败都不再让整集失败，转入音频兜底（与 bilibili 同策略）。
+            subtitle_reason = str(e).strip() or 'unknown'
+            body, subtitle_info = [], {}
+            print(f'   ⚠️ 字幕不可用: {subtitle_reason}')
+        else:
+            print(f"   字幕: {subtitle_info.get('language') or ''} / {subtitle_info.get('language_code') or ''} / {subtitle_info.get('source') or ''} / lines={len(body)}")
+            if not body:
+                subtitle_reason = 'empty_transcript'
+                print('   ⚠️ 字幕为空')
+
+    if not body:
+        print(f'ℹ️ 未获得可用字幕，转入音频模式（{subtitle_reason or "force_audio"}）' if not force_audio else '🎧 音频模式')
+        return _ingest_audio_mode(
+            target, video_id, meta,
+            local=local, no_notebooklm=no_notebooklm, no_infographic=no_infographic,
+            keep_temp=keep_temp, subtitle_reason=subtitle_reason or 'force_audio',
+        )
 
     preview_markdown = build_youtube_markdown(meta, transcript_body=body, subtitle_info=subtitle_info)
     if local:
@@ -499,11 +706,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='YouTube video → Fast Note / NotebookLM for core')
     parser.add_argument('target', help='YouTube video URL or video id')
     parser.add_argument('--local', action='store_true', help='Save artifacts locally under ~/Downloads; no Fast Note/NotebookLM writes')
+    parser.add_argument('--force-audio', action='store_true', help='Skip transcript entirely and go straight to the audio fallback')
     parser.add_argument('--no-notebooklm', action='store_true', help='Skip NotebookLM upload')
     parser.add_argument('--no-infographic', action='store_true', help='Skip NotebookLM infographic creation')
+    parser.add_argument('--keep-temp', action='store_true', help='Keep the temporary audio download directory')
     args = parser.parse_args()
     try:
-        ingest(args.target, local=args.local, no_notebooklm=args.no_notebooklm, no_infographic=args.no_infographic)
+        ingest(args.target, local=args.local, force_audio=args.force_audio, no_notebooklm=args.no_notebooklm, no_infographic=args.no_infographic, keep_temp=args.keep_temp)
     except KeyboardInterrupt:
         raise
     except Exception as exc:
